@@ -1,0 +1,28 @@
+{
+  "name": "ark-exporter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reads ARK: Survival Evolved savegames completely and writes searchable SQLite snapshots plus a change history.",
+  "license": "MIT",
+  "author": "Andreas Herbert (andi79h)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andi79h/ark-exporter.git"
+  },
+  "type": "module",
+  "bin": {
+    "ark-export": "bin/ark-export"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test 'test/*.test.ts'",
+    "test:bun": "bun test test/"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  }
+}
