@@ -19,6 +19,7 @@ Usage:
                                                      snapshot + history + delete old snapshots
   ark-export sync --out DIR [--keep K] [--min-age S] <SavedArks dir | Map.ark>...
                                                      run for every save that changed since the last export
+  ark-export mysql --out DIR [--name N] --mysql URL  copy newest snapshot and history to MySQL
   ark-export query <file.sqlite> <SQL> [params...]   print rows as JSON lines
   ark-export compare <old.sqlite> <new.sqlite>       which fields change between two snapshots
 
@@ -29,6 +30,8 @@ Options:
   --min-age S      skip saves written less than S seconds ago (default 20)
   --exclude A,B    sync: skip these names
   --no-containers  leave out .arkprofile/.arktribe/.arktributetribe files
+  --mysql URL      also keep MySQL up to date (run, sync): mysql://user:pass@host/db,
+                   or @FILE with that URL; default: $ARK_EXPORT_MYSQL
 `;
 
 function log(msg: string): void {
@@ -70,13 +73,34 @@ function lock(out: string): () => void {
   throw new Error(`cannot lock ${out}`);
 }
 
-async function runOne(save: string, out: string, name: string, keep: number, containers: boolean): Promise<void> {
+/** The MySQL part (and the mysql2 package) is only loaded when MySQL is used. */
+async function mirror(mapDir: string, name: string, url: string): Promise<void> {
+  const { mirrorToMysql } = await import('./mysql.ts');
+  await mirrorToMysql(mapDir, name, url, log);
+}
+
+/** `mysql://user:password@host:port/database`, or `@/path/to/file` holding that URL (keeps it out of `ps`). */
+function resolveMysqlUrl(value: string): string {
+  return value.startsWith('@') ? readFileSync(value.slice(1), 'utf8').trim() : value;
+}
+
+async function runOne(save: string, out: string, name: string, keep: number, containers: boolean, mysqlUrl: string | null): Promise<void> {
   const snap = await createSnapshot({ save, out, name, containers, log });
   if (snap.skipped) {
     log(`${name}: ${basename(snap.path)} already exported`);
   }
-  await updateHistory(join(out, name), log);
-  pruneSnapshots(join(out, name), keep, log);
+  const mapDir = join(out, name);
+  await updateHistory(mapDir, log);
+  if (mysqlUrl) {
+    try {
+      await mirror(mapDir, name, mysqlUrl);
+    } catch (e) {
+      // Keep the snapshot MySQL still reflects, so the next run can continue incrementally.
+      log(`${name}: MySQL FAILED, old snapshots kept: ${(e as Error).message}`);
+      throw e;
+    }
+  }
+  pruneSnapshots(mapDir, keep, log);
 }
 
 async function inspect(save: string): Promise<void> {
@@ -159,12 +183,15 @@ async function main(argv: string[]): Promise<number> {
       'min-age': { type: 'string', default: '20' },
       'no-containers': { type: 'boolean', default: false },
       exclude: { type: 'string', default: '' },
+      mysql: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
   const [command, ...args] = positionals;
   const keep = Number(values.keep);
   const containers = !values['no-containers'];
+  const mysqlSetting = values.mysql ?? process.env.ARK_EXPORT_MYSQL ?? null;
+  const mysqlUrl = mysqlSetting ? resolveMysqlUrl(mysqlSetting) : null;
   const needOut = (): string => {
     if (!values.out) throw new Error('--out is required');
     return resolve(values.out);
@@ -190,7 +217,7 @@ async function main(argv: string[]): Promise<number> {
       const out = needOut();
       const unlock = lock(out);
       try {
-        await runOne(save, out, values.name ?? defaultName(save), keep, containers);
+        await runOne(save, out, values.name ?? defaultName(save), keep, containers, mysqlUrl);
       } finally {
         unlock();
       }
@@ -210,7 +237,7 @@ async function main(argv: string[]): Promise<number> {
           if (exclude.has(defaultName(save))) continue;
           if (Date.now() - statSync(save).mtimeMs < minAge) { log(`${save}: written just now, next time`); continue; }
           try {
-            await runOne(save, out, defaultName(save), keep, containers);
+            await runOne(save, out, defaultName(save), keep, containers, mysqlUrl);
           } catch (e) {
             failed++;
             log(`${save}: FAILED ${(e as Error).stack ?? e}`);
@@ -220,6 +247,13 @@ async function main(argv: string[]): Promise<number> {
         unlock();
       }
       return failed ? 1 : 0;
+    }
+    case 'mysql': {
+      if (!mysqlUrl) throw new Error('--mysql or $ARK_EXPORT_MYSQL is required');
+      const out = needOut();
+      const names = values.name ? [values.name] : readdirSync(out).filter((n) => existsSync(join(out, n, 'latest.sqlite')));
+      for (const name of names) await mirror(join(out, name), name, mysqlUrl);
+      return 0;
     }
     case 'query':
       await query(args[0], args[1], args.slice(2));

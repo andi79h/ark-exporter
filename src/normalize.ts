@@ -62,6 +62,10 @@ export interface Row {
   source: Source;
   category: string;
   cls: string;
+  /** Readable name for searching: tamed name, player name, box name, custom item name, tribe name. */
+  name: string | null;
+  /** Tribe or owner name shown in game. */
+  tribeName: string | null;
   names: string;
   container: string | null;
   owner: string | null;
@@ -83,6 +87,23 @@ function isStruct(v: Value | undefined): v is { [key: string]: Value } {
   return typeof v === 'object' && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 }
 
+/** Non-empty string, cut to 255 characters (the full value stays in the JSON). */
+function text(v: Value | undefined): string | null {
+  return typeof v === 'string' && v.length ? v.slice(0, 255) : null;
+}
+
+/** Names worth a column of their own, so searches need no JSON functions. */
+export function labels(o: GameObject): { name: string | null; tribeName: string | null } {
+  const p = o.props;
+  const my = isStruct(p.MyData) ? p.MyData : {};
+  const tribe = isStruct(p.TribeData) ? p.TribeData : {};
+  return {
+    name: text(p.TamedName) ?? text(p.PlayerName) ?? text(p.BoxName) ?? text(p.CustomItemName)
+      ?? text(my.PlayerName) ?? text(tribe.TribeName) ?? text(p.PlatformProfileName),
+    tribeName: text(p.TribeName) ?? text(p.OwnerName) ?? text(p.TamerString) ?? text(tribe.TribeName),
+  };
+}
+
 export function category(o: GameObject): string {
   const p = o.props;
   if (o.isItem) return 'item';
@@ -102,7 +123,7 @@ function idKey(o: GameObject): string | null {
   return null;
 }
 
-function hashOf(s: string): string {
+export function hashOf(s: string): string {
   return createHash('md5').update(s).digest('base64url').slice(0, 22);
 }
 
@@ -129,19 +150,35 @@ function serialize(props: Props): { json: string; hash: string } {
   return { json, hash };
 }
 
+/** Longer keys are cut and made unique with a checksum (fits MySQL indexes). */
+export const MAX_KEY_LENGTH = 500;
+
+function limitKey(key: string): string {
+  return key.length <= MAX_KEY_LENGTH ? key : `${key.slice(0, MAX_KEY_LENGTH - 24)}…${hashOf(key).slice(0, 16)}`;
+}
+
 /** Assigns unique keys: the first holder keeps the key, later ones get #2, #3, ... */
 export class KeyRegistry {
   private readonly seen = new Map<string, number>();
   duplicates = 0;
 
-  has(key: string): boolean { return this.seen.has(key); }
+  has(key: string): boolean { return this.seen.has(limitKey(key)); }
 
   claim(key: string): string {
+    key = limitKey(key);
     const n = this.seen.get(key);
     if (n === undefined) { this.seen.set(key, 1); return key; }
     this.seen.set(key, n + 1);
     this.duplicates++;
     return `${key}#${n + 1}`;
+  }
+
+  /** Next free `<key>~2`, `<key>~3`, ... for further copies of the same thing. */
+  variant(key: string): string {
+    for (let n = 2; ; n++) {
+      const k = `${key}~${n}`;
+      if (!this.has(k)) return k;
+    }
   }
 }
 
@@ -170,9 +207,10 @@ export function assignKeys(
   for (const i of order) {
     const o = objects[i];
     let key = idKey(o);
-    // Inside an embedded archive an ID can repeat its container's: the Ferox keeps its other
-    // form (same DinoID) as embedded data. Such copies live below their container.
-    if (key !== null && prefix !== null && registry.has(key)) key = `${prefix}/${o.names[0] ?? `#${i}`}`;
+    // Inside an embedded archive an ID can repeat: the Ferox keeps its other form (same DinoID)
+    // as embedded data, nested one level deeper with every transformation (16 levels seen).
+    // Such copies become <key>~2, <key>~3, ... in the order they are found.
+    if (key !== null && prefix !== null && registry.has(key)) key = registry.variant(key);
     if (key === null) {
       if (o.names.length > 1) {
         const outer = byNames.get(o.names.slice(1).join(SEP));
@@ -237,8 +275,9 @@ export function emitArchive(
     }
     const ov = options.overrides?.(o, i);
     const loc = o.loc;
+    const { name, tribeName } = labels(o);
     emit({
-      key, source, category: ov?.category ?? category(o), cls: o.cls, names: JSON.stringify(o.names),
+      key, source, category: ov?.category ?? category(o), cls: o.cls, name, tribeName, names: JSON.stringify(o.names),
       container, owner: ov?.owner !== undefined ? ov.owner : owner,
       team: ov?.team !== undefined ? ov.team : num(o.props.TargetingTeam),
       x: loc ? num(loc.x) : null, y: loc ? num(loc.y) : null, z: loc ? num(loc.z) : null,

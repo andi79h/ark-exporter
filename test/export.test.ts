@@ -61,20 +61,29 @@ test('folder name from the installation path, else the map', () => {
   assert.equal(defaultName('/backups/Gen2.ark'), 'Gen2');
 });
 
-test('embedded copy with the same ID (Ferox other form) lives below its container', () => {
-  const alt = buildEmbedded([
-    { cls: 'Shapeshifter_Small_Character_BP_C', names: ['Shapeshifter_Small_Character_BP_C_3'], props: [int('DinoID1', 5), int('DinoID2', 6)] },
+test('nested copies with the same ID (Ferox forms) become ~2, ~3', () => {
+  const large = buildEmbedded([
+    { cls: 'Shapeshifter_Large_Character_BP_C', names: ['Shapeshifter_Large_Character_BP_C_0'], props: [int('DinoID1', 5), int('DinoID2', 6)] },
+  ]);
+  const small = buildEmbedded([
+    { cls: 'Shapeshifter_Small_Character_BP_C', names: ['Shapeshifter_Small_Character_BP_C_3'], props: [int('DinoID1', 5), int('DinoID2', 6), struct('LargeDinoData', 'ShapeshifterDinoData', [bytesArray('DinoData', large)])] },
     { cls: 'DinoCharacterStatusComponent_BP_Shapeshifter_Small_C', names: ['Status_3', 'Shapeshifter_Small_Character_BP_C_3'], props: [] },
   ]);
   const r = rows(buildSave([{
     cls: 'Shapeshifter_Large_Character_BP_C', names: ['Shapeshifter_Large_Character_BP_C_1'], loc: [1, 2, 3],
-    props: [int('DinoID1', 5), int('DinoID2', 6), struct('SmallsDinoData', 'ShapeshifterDinoData', [bytesArray('DinoData', alt)])],
+    props: [int('DinoID1', 5), int('DinoID2', 6), struct('SmallsDinoData', 'ShapeshifterDinoData', [bytesArray('DinoData', small)])],
   }]));
-  assert.deepEqual([...r.keys()], [
-    'dino:5:6',
-    'dino:5:6/Shapeshifter_Small_Character_BP_C_3',
-    'dino:5:6/Shapeshifter_Small_Character_BP_C_3/Status_3',
-  ]);
+  assert.deepEqual([...r.keys()], ['dino:5:6', 'dino:5:6~2', 'dino:5:6~3', 'dino:5:6~2/Status_3']);
+  assert.equal(r.get('dino:5:6~3')!.container, 'dino:5:6~2');
+});
+
+test('overlong keys are cut with a checksum', () => {
+  const reg = new KeyRegistry();
+  const a = reg.claim(`actor:${'x'.repeat(600)}`);
+  const b = reg.claim(`actor:${'x'.repeat(599)}y`);
+  assert.ok(a.length <= 500 && b.length <= 500);
+  assert.notEqual(a, b);
+  assert.equal(new KeyRegistry().claim(`actor:${'x'.repeat(600)}`), a, 'same input, same key');
 });
 
 test('volatile fields do not change the hash', () => {

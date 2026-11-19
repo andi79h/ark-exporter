@@ -5,7 +5,25 @@ Liest Spielstände von **ARK: Survival Evolved** (`.ark`, Save-Version 9) **voll
 - einen **vollen Snapshot** als SQLite-Datei mit einer Zeile pro Objekt. Das sind Tiere, Items, Bauteile, Komponenten, Kryo-Inhalte, Profile und Stämme, jeweils mit allen Eigenschaften als JSON.
 - einen **Verlauf**: was dazugekommen ist, was weggefallen ist, was sich wirklich geändert hat und wohin sich Tiere und Spieler bewegt haben.
 
-Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**. Es ist TypeScript ohne Build-Schritt und hat keine Laufzeit-Abhängigkeiten. ARK: Survival Ascended (ASA) wird noch nicht unterstützt.
+Auf Wunsch spiegelt es beides nach **MySQL**, damit man mit jedem MySQL-Werkzeug darin suchen kann.
+
+Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**. Es ist TypeScript ohne Build-Schritt. Die einzige Laufzeit-Abhängigkeit ist der MySQL-Treiber `mysql2`; er wird nur geladen, wenn MySQL genutzt wird (`npm ci --omit=dev`).
+
+## Formate
+
+| Spiel und Format | Stand |
+|---|---|
+| ARK: Survival Evolved, Save-Version 9 | vollständig, getestet mit Genesis 2 |
+| ARK: Survival Evolved, Save-Version 10–11 (neuere Spielstände) | teilweise: Welt und Eigenschaften wie bei 9; die angehängten Blöcke mit Stämmen, Spielern und Kryo-Speicher werden noch nicht gelesen und in `inspect` als „unaccounted“ gezählt; ohne Beispiel-Save ungetestet |
+| ARK: Survival Evolved, Save-Version 12 | noch nicht |
+| ARK: Survival Ascended (ASA) | noch nicht |
+
+ASA speichert ganz anders als ASE:
+- **Speicherform:** Die `.ark` ist selbst eine SQLite-Datenbank. Jedes Objekt liegt als Binärblock unter einer echten 16-Byte-UUID in der Tabelle `game`.
+- **Kopf und Positionen:** Kopf, Namenstabelle und Positionen stehen in der Tabelle `custom`.
+- **Eigenschaften:** Sie folgen dem Unreal-5-Format.
+
+Ein Leser dafür ist machbar; ASV enthält dafür ein eigenes Toolkit von rund 2.200 Zeilen. Zum Testen braucht es aber ASA-Spielstände.
 
 > **Datenschutz:** Exporte enthalten Steam-IDs, Spielernamen und zuletzt genutzte IP-Adressen aus den Profilen. Nicht veröffentlichen.
 
@@ -54,9 +72,10 @@ Jede Zeile hat einen Schlüssel, der Saves und Server-Neustarts überdauert. Zwi
 | `tribe:<TribeId>` | Stämme (`.arktribe`) |
 | `actor:<Name>` | Bauteile und andere platzierte Actors |
 | `actor:<Name>@<Sublevel>` | Actors aus Sublevels (Foliage, NPC-Zonen) |
-| `<Besitzer>/<Name>` | Komponenten (Inventar, Status) und eingebettete Kopien unter ihrem Besitzer |
+| `<Besitzer>/<Name>` | Komponenten (Inventar, Status) unter ihrem Besitzer |
+| `dino:…~2`, `~3` … | eingebettete Kopien mit derselben ID; der Ferox legt bei jeder Verwandlung seine alte Gestalt eine Ebene tiefer ab (bis zu 16 Ebenen gesehen) |
 
-Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Die Ursache ist noch unklar.
+Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Die Ursache ist noch unklar.
 
 Die GUIDs der Objekttabelle sind als Schlüssel unbrauchbar: Sie sind zu 95 % leer, der Rest ist vielfach doppelt.
 
@@ -93,6 +112,8 @@ Ohne diese Liste wären nach jedem Neustart fast alle 2,2 Mio. Objekte „geänd
 | `source` | `world`, `cryo` (eingebettet), `profile`, `tribe`, `tribute` |
 | `category` | `dino`, `item`, `structure`, `pawn`, `component`, `actor`, `player`, `player-data`, `tribe`, `tribe-data`, `tribute` |
 | `class` | Blueprint-Klasse |
+| `name` | lesbarer Name zum Suchen: Tiername, Spielername, Kistenname, Item-Name, Stammname |
+| `tribe_name` | Stamm oder Besitzer, wie im Spiel angezeigt |
 | `names` | Namenskette als JSON (Actor, dann Besitzer) |
 | `container` | Item, in dem das Objekt eingebettet ist (Kryokapsel) |
 | `owner` | Besitzer: Actor des Inventars (bei Items) bzw. äußeres Objekt (bei Komponenten) |
@@ -125,7 +146,50 @@ Ohne diese Liste wären nach jedem Neustart fast alle 2,2 Mio. Objekte „geänd
 | `changes` | `added`/`removed` mit vollen Eigenschaften, `changed` mit `{"Feld": [alt, neu]}`; Spaltenänderungen als `$owner`, `$container` usw. |
 | `positions` | Tiere und Spieler bei der Basis, danach alles, was sich mehr als 50 Einheiten (0,5 m) bewegt hat oder bei Tieren den Behälter bzw. Besitzer gewechselt hat |
 
-## Beispiele
+## MySQL
+
+Mit `--mysql` (oder der Umgebungsvariable `ARK_EXPORT_MYSQL`) halten `run` und `sync` zusätzlich eine MySQL-Datenbank aktuell. Erwartet wird eine URL `mysql://benutzer:passwort@host:3306/datenbank`. Damit das Passwort nicht in der Prozessliste steht, kann statt der URL `@/pfad/zur/datei` stehen; die Datei enthält dann die URL.
+
+Die Tabellen legt der Exporter selbst an. Alle Exporte teilen sich eine Datenbank, die Spalte `map` trennt sie (der Name des Exports, z. B. die Instanz):
+
+| Tabelle | Inhalt |
+|---|---|
+| `maps` | je Export: ARK-Karte, gespiegelter Snapshot, Save-Zeit, Objektzahl, Abdeckung |
+| `objects` | der neueste Stand, Spalten wie im Snapshot; `props`, `names`, `extra` als JSON |
+| `saves`, `changes`, `positions` | der Verlauf, `seq` ist die laufende Nummer des Saves |
+
+**Was geschrieben wird:**
+- **Erster Lauf:** Der volle Stand wird geladen.
+- **Danach:** Nur die Zeilen, die sich gegenüber dem gespiegelten Snapshot unterscheiden, werden geschrieben. Bei einem normalen Save sind das wenige tausend; nach einem Server-Neustart mehr, weil sich die Stasis-Zeiten aller Objekte ändern.
+- **Verlauf:** Neue Einträge werden angehängt.
+- **Wenn MySQL nicht erreichbar ist:** Die alten Snapshots bleiben liegen. Der nächste Lauf holt den Abgleich nach.
+
+Getestet mit MySQL 5.7 und 8.0. Der Benutzer braucht auf der Datenbank `CREATE`, `INDEX`, `SELECT`, `INSERT`, `UPDATE` und `DELETE`.
+
+**Messung mit dem Gen2-Save** (MySQL 8.0 in Docker auf einem Mac):
+
+| | |
+|---|---|
+| Erstladung, 2,2 Mio. Zeilen über 4 Verbindungen | 4,9 Minuten |
+| danach je Save (2.926 Zeilen geschrieben, 331 gelöscht) | 4,7 Sekunden |
+| Platz in MySQL für eine Gen2-Karte | 3,1 GB |
+
+Ein größerer `innodb_buffer_pool_size` beschleunigt die Erstladung; voreingestellt sind nur 128 MB.
+
+```sql
+-- zahme Tiere eines Stamms, über alle Karten
+SELECT map, name, class, x, y FROM objects WHERE category = 'dino' AND tribe_name = 'Meine Truppe';
+-- Suche nach Namen
+SELECT map, `key`, category, name FROM objects WHERE name LIKE '%Rex%';
+-- Werte aus dem JSON
+SELECT name, props->>'$.BaseCharacterLevel' AS level FROM objects WHERE `key` LIKE 'dino:%' AND props->>'$.TamedName' IS NOT NULL;
+-- Weg eines Tiers
+SELECT s.saved_at, p.x, p.y, p.z FROM positions p JOIN saves s USING (map, seq) WHERE p.`key` = 'dino:12345:67890' ORDER BY s.saved_at;
+```
+
+Im JSON sind Verweise Objekte wie `{"$ref": "…"}`. In MySQL-Pfaden muss der Name deshalb in Anführungszeichen stehen: `props->>'$.MyInventoryComponent."$ref"'`.
+
+## Beispiele für die SQLite-Dateien
 
 ```bash
 # zahme Tiere eines Stamms
@@ -149,6 +213,7 @@ ark-export history --out DIR --name N [--keep K]    neuesten Snapshot mit dem vo
 ark-export run <Map.ark> --out DIR [--name N]       Snapshot + Verlauf + alte Snapshots löschen
 ark-export sync --out DIR [--exclude A,B] <SavedArks-Ordner | Map.ark>...
                                                     für jeden Save, der seit dem letzten Export neu ist
+ark-export mysql --out DIR [--name N] --mysql URL   neuesten Stand und Verlauf nach MySQL übertragen
 ark-export query <datei.sqlite> <SQL> [Parameter]   Zeilen als JSON Lines
 ark-export compare <alt.sqlite> <neu.sqlite>        welche Felder sich ändern
 ```
@@ -188,6 +253,8 @@ Cron des Benutzers `steam`, kurz nach den Saves. Hier wird angenommen, dass der 
 ```
 
 - **Laufzeit festlegen:** Stehen weder `bun` noch `node` im `PATH`, zeigt `ARK_EXPORT_RUNTIME` auf die Binary. Beispiel: `ARK_EXPORT_RUNTIME=/opt/node/bin/node`.
+- **Mit MySQL:** `--mysql @/home/steam/.ark-export-mysql` anhängen. Die Datei gehört `steam`, hat die Rechte 600 und enthält nur die URL.
+- **Nach dem Einrichten:** Npm-Pakete einmal installieren: `cd /opt/ark-exporter && npm ci --omit=dev` (oder `bun install --production`).
 - **Ältere Distributionen** wie Ubuntu 18.04 (glibc 2.27): Das offizielle Node ab Version 18 läuft dort nicht. Bun läuft, ebenso der inoffizielle Build `linux-x64-glibc-217` von [unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/download/release/).
 
 ## Entwicklung
@@ -197,6 +264,7 @@ npm install         # nur TypeScript und Typen für die Prüfung
 npm run check       # tsc --noEmit
 npm test            # Node-Testlauf
 npm run test:bun    # dieselben Tests unter Bun
+ARK_EXPORT_TEST_MYSQL=mysql://root:pw@127.0.0.1:3306/mysql npm test   # mit MySQL-Test (legt eine Wegwerf-Datenbank an)
 ```
 
 Die Tests bauen kleine künstliche Saves (`test/build.ts`, `test/fixtures.ts`). Im Repo liegen keine echten Spielstände.

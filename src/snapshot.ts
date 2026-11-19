@@ -3,7 +3,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { readContainer, readTributeTribe } from './container.ts';
-import { emitArchive, emitWorld, type EmitStats, KeyRegistry, type Row, VOLATILE_FIELDS } from './normalize.ts';
+import { emitArchive, emitWorld, type EmitStats, hashOf, KeyRegistry, type Row, VOLATILE_FIELDS } from './normalize.ts';
 import { readSave } from './savegame.ts';
 import { openDatabase, runtime } from './sqlite.ts';
 import { type GameObject, ReadContext, type Value } from './types.ts';
@@ -18,6 +18,8 @@ CREATE TABLE objects (
   source TEXT NOT NULL,
   category TEXT NOT NULL,
   class TEXT NOT NULL,
+  name TEXT,
+  tribe_name TEXT,
   names TEXT NOT NULL,
   container TEXT,
   owner TEXT,
@@ -35,7 +37,9 @@ CREATE UNIQUE INDEX objects_key ON objects(key);
 CREATE INDEX objects_class ON objects(class);
 CREATE INDEX objects_category_team ON objects(category, team);
 CREATE INDEX objects_owner ON objects(owner);
-CREATE INDEX objects_container ON objects(container);`;
+CREATE INDEX objects_container ON objects(container);
+CREATE INDEX objects_name ON objects(name COLLATE NOCASE);
+CREATE INDEX objects_tribe_name ON objects(tribe_name COLLATE NOCASE);`;
 
 /** File-name friendly UTC time stamp. */
 export function stamp(d: Date): string {
@@ -76,9 +80,9 @@ function emitContainers(dir: string, registry: KeyRegistry, emit: (row: Row) => 
         const json = JSON.stringify(readTributeTribe(buf));
         emit({
           key: registry.claim(`tribute:${stem}`), source: 'tribute', category: 'tribute', cls: 'TributeTribe',
-          names: JSON.stringify([file]), container: null, owner: `tribe:${stem}`, team: Number(stem) || null,
+          name: null, tribeName: null, names: JSON.stringify([file]), container: null, owner: `tribe:${stem}`, team: Number(stem) || null,
           x: null, y: null, z: null, pitch: null, yaw: null, roll: null, dataFile: null, guid: null,
-          hash: json, props: json, extra: null,
+          hash: hashOf(json), props: json, extra: null,
         });
         stats.rows++;
         counts.tributes++;
@@ -137,12 +141,13 @@ export async function createSnapshot(opts: {
     db.exec(`PRAGMA ${pragma}`);
   }
   db.exec(SNAPSHOT_SCHEMA);
-  const insert = db.prepare(`INSERT INTO objects (key, source, category, class, names, container, owner, team, x, y, z, pitch, yaw, roll, data_file, guid, hash, props, extra)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insert = db.prepare(`INSERT INTO objects (key, source, category, class, name, tribe_name, names, container, owner, team,
+      x, y, z, pitch, yaw, roll, data_file, guid, hash, props, extra)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const categories = new Map<string, number>();
   const emit = (r: Row) => {
-    insert.run(r.key, r.source, r.category, r.cls, r.names, r.container, r.owner, r.team, r.x, r.y, r.z, r.pitch, r.yaw, r.roll,
-      r.dataFile, r.guid, r.hash, r.props, r.extra);
+    insert.run(r.key, r.source, r.category, r.cls, r.name, r.tribeName, r.names, r.container, r.owner, r.team,
+      r.x, r.y, r.z, r.pitch, r.yaw, r.roll, r.dataFile, r.guid, r.hash, r.props, r.extra);
     const c = `${r.source}:${r.category}`;
     categories.set(c, (categories.get(c) ?? 0) + 1);
   };
