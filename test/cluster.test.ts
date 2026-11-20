@@ -38,7 +38,9 @@ const wideAscii = (name: string, s: string): Prop => ({
  * A shortened ItemNetInfo; `odd` adds encodings the writer would not produce itself. `quantityRaw`
  * is ItemQuantity as stored (pieces - 1), default 1 (two pieces).
  */
-function itemInfo(id: [number, number], o: { odd?: boolean; stats?: number[]; quantityRaw?: number; blueprint?: string } = {}): Prop[] {
+function itemInfo(
+  id: [number, number], o: { odd?: boolean; stats?: number[]; quantityRaw?: number; blueprint?: string; allowRemoval?: boolean } = {},
+): Prop[] {
   const stats = o.stats ?? [0, 0, 0, 0, 0, 0, 0, 0];
   return [
     path('ItemArchetype', `BlueprintGeneratedClass ${o.blueprint ?? RIOT}`),
@@ -50,6 +52,7 @@ function itemInfo(id: [number, number], o: { odd?: boolean; stats?: number[]; qu
     empty('SteamUserItemID', 'UInt64Property'),
     bool('bIsBlueprint', false),
     bool('bIsEngram', !!o.odd),
+    ...(o.allowRemoval === undefined ? [] : [bool('bAllowRemovalFromInventory', o.allowRemoval)]),
     float('ItemDurability', 250),
     o.odd
       ? { name: 'ItemRating', type: 'FloatProperty', value: (w) => w.bytes(Buffer.from([1, 0, 0xc0, 0xff])) } // NaN with payload
@@ -219,8 +222,8 @@ test('add-item: new item with free values, everything else unchanged', () => {
     crafterName: 'Test Crafter', expiresIn: 3600,
   }, { now: 1_800_000_000, randomId: () => ids.shift()! });
   assert.deepEqual(added, {
-    index: 2, itemId: [5, 6], blueprint: `BlueprintGeneratedClass ${RIOT}`, quantity: 1, quantityRaw: 0, uploadTime: 1_800_000_000,
-    expiration: 1_800_003_600, owner: '123456789',
+    index: 2, itemId: [5, 6], blueprint: `BlueprintGeneratedClass ${RIOT}`, quantity: 1, quantityRaw: 0, allowRemoval: true,
+    uploadTime: 1_800_000_000, expiration: 1_800_003_600, owner: '123456789',
   });
   const out = writeClusterTree(tree);
   const v = readCluster(out);
@@ -236,6 +239,7 @@ test('add-item: new item with free values, everything else unchanged', () => {
   assert.equal(it.quantity, 1, 'default: one piece');
   assert.equal(it.quantityRaw, 0, 'one piece is stored as ItemQuantity 0');
   assert.equal(it.isBlueprint, false);
+  assert.equal(it.allowRemoval, true, 'without bAllowRemovalFromInventory ARK refuses the download');
   assert.equal(it.customName, 'Treuebonus');
   assert.equal(it.crafterName, 'Test Crafter');
   assert.equal(it.version, 2);
@@ -286,28 +290,30 @@ test('add-item: rejects what the file cannot hold', () => {
 const INGOT = '/Game/PrimalEarth/CoreBlueprints/Resources/PrimalItemResource_MetalIngot.PrimalItemResource_MetalIngot_C';
 const AMMO = '/Game/PrimalEarth/CoreBlueprints/Items/Weapons/PrimalItemAmmo_SimpleBullet.PrimalItemAmmo_SimpleBullet_C';
 
-/** ItemQuantity straight from the bytes, with the export reader (not the cluster view). */
-const storedQuantities = (buf: Buffer): number[] =>
-  (readContainer(buf).objects[0].props.MyArkData as { ArkItems: { ArkTributeItem: { ItemQuantity: number } }[] })
-    .ArkItems.map((e) => e.ArkTributeItem.ItemQuantity);
+type Stored = { ItemQuantity: number; bAllowRemovalFromInventory?: boolean; bIsBlueprint?: boolean };
+/** The ItemNetInfos straight from the bytes, with the export reader (not the cluster view). */
+const storedInfos = (buf: Buffer): Stored[] =>
+  (readContainer(buf).objects[0].props.MyArkData as { ArkItems: { ArkTributeItem: Stored }[] }).ArkItems.map((e) => e.ArkTributeItem);
+const storedQuantities = (buf: Buffer): number[] => storedInfos(buf).map((i) => i.ItemQuantity);
 
 test('cluster: ItemQuantity is pieces - 1, as in files the game wrote', () => {
   // Like real uploads: a full stack of 100 stores 99, a full stack of 50 stores 49, a single item 0.
   const buf = buildContainer([{
     cls: 'ArkCloudInventoryData', names: ['ArkCloudInventoryData_0'], isItem: true, extra: Buffer.alloc(4),
     props: [struct('MyArkData', 'ArkInventoryData', [structArray('ArkItems', [
-      entry(itemInfo([1, 1], { blueprint: INGOT, quantityRaw: 99 }), 1_800_000_000),
-      entry(itemInfo([2, 2], { blueprint: AMMO, quantityRaw: 49 }), 1_800_000_000),
+      entry(itemInfo([1, 1], { blueprint: INGOT, quantityRaw: 99, allowRemoval: true }), 1_800_000_000),
+      entry(itemInfo([2, 2], { blueprint: AMMO, quantityRaw: 49, allowRemoval: false }), 1_800_000_000),
       entry(itemInfo([3, 3], { quantityRaw: 0 }), 1_800_000_000),
     ])])],
   }], 4);
   const v = readCluster(buf);
   assert.deepEqual(v.items.map((i) => i.quantity), [100, 50, 1]);
   assert.deepEqual(v.items.map((i) => i.quantityRaw), [99, 49, 0]);
+  assert.deepEqual(v.items.map((i) => i.allowRemoval), [true, false, null]);
   assert.ok(writeClusterTree(readClusterTree(buf)).equals(buf));
 });
 
-test('add-item: --quantity 1, 50 and 100 are written as 0, 49 and 99 and read back as pieces', () => {
+test('add-item: downloadable items: ItemQuantity = pieces - 1 and bAllowRemovalFromInventory = true', () => {
   let tree = readClusterTree(clusterFile());
   const added = [];
   for (const [blueprint, quantity] of [[RIOT, 1], [AMMO, 50], [INGOT, 100]] as const) {
@@ -318,12 +324,24 @@ test('add-item: --quantity 1, 50 and 100 are written as 0, 49 and 99 and read ba
   assert.deepEqual(added.map((a) => [a.quantity, a.quantityRaw]), [[1, 0], [50, 49], [100, 99]]);
   const out = writeClusterTree(tree);
   assert.deepEqual(storedQuantities(out), [1, 1, 0, 49, 99], 'the two fixture items store 1 each');
+  assert.deepEqual(storedInfos(out).slice(2).map((i) => i.bAllowRemovalFromInventory), [true, true, true]);
   const v = readCluster(out);
   assert.deepEqual(v.items.map((i) => i.quantity), [2, 2, 1, 50, 100]);
   // Round trip: read, write, read again gives the same bytes and the same pieces.
   const again = writeClusterTree(readClusterTree(out));
   assert.ok(again.equals(out));
   assert.deepEqual(readCluster(again).items.map((i) => i.quantity), [2, 2, 1, 50, 100]);
+});
+
+test('add-item: blueprints get bAllowRemovalFromInventory too, unless switched off', () => {
+  const bp = addItem(null, { blueprint: RIOT, isBlueprint: true, owner: 1 }, { now: 1_800_000_000 });
+  const off = addItem(null, { blueprint: INGOT, quantity: 50, allowRemoval: false, owner: 1 }, { now: 1_800_000_000 });
+  assert.equal(bp.added.allowRemoval, true);
+  assert.equal(off.added.allowRemoval, false);
+  const [b] = storedInfos(writeClusterTree(bp.tree));
+  assert.deepEqual([b.bIsBlueprint, b.bAllowRemovalFromInventory, b.ItemQuantity], [true, true, 0]);
+  const [o] = storedInfos(writeClusterTree(off.tree));
+  assert.deepEqual([o.bAllowRemovalFromInventory, o.ItemQuantity], [false, 49]);
 });
 
 test('itemArchetype accepts the usual spellings', () => {
@@ -339,13 +357,14 @@ test('itemArchetype accepts the usual spellings', () => {
 test('item template: one field per name and index', () => {
   const e = tributeItemEntry({
     archetype: `BlueprintGeneratedClass ${RIOT}`, itemId: [1, 2], quantityRaw: 0, quality: 0, rating: 0, durability: 0, stats: [], colors: [],
-    isBlueprint: true, customName: null, customDescription: null, crafterName: null, crafterTribe: null, ammo: 0, owner: 0n,
+    isBlueprint: true, allowRemoval: false, customName: null, customDescription: null, crafterName: null, crafterTribe: null, ammo: 0, owner: 0n,
     uploadTime: 0, expiration: 0,
   });
   const info = e[0].value as Property[];
   assert.equal(info.length, 95);
   assert.equal(new Set(info.map((p) => `${p.name}[${p.index}]`)).size, 95);
   assert.equal(findProperty(info, 'bIsBlueprint')!.value, true);
+  assert.equal(findProperty(info, 'bAllowRemovalFromInventory')!.value, false);
 });
 
 test('cluster CLI: check, add-item --out / --in-place, refuses when the file changed meanwhile', () => {
@@ -381,7 +400,10 @@ test('cluster CLI: check, add-item --out / --in-place, refuses when the file cha
     const shown = run('show', ingots);
     assert.equal(shown.status, 0, shown.stderr);
     const last = JSON.parse(shown.stdout).items.at(-1);
-    assert.deepEqual([last.quantity, last.quantityRaw], [100, 99]);
+    assert.deepEqual([last.quantity, last.quantityRaw, last.allowRemoval], [100, 99, true]);
+    const locked = join(dir, 'locked');
+    assert.equal(run('add-item', src, '--blueprint', INGOT, '--disallow-removal', '--out', locked).status, 0);
+    assert.equal(storedInfos(readFileSync(locked)).at(-1)!.bAllowRemovalFromInventory, false);
     assert.notEqual(run('add-item', src, '--blueprint', INGOT, '--quantity', '0', '--out', join(dir, 'zero')).status, 0, 'at least one piece');
 
     const r2 = run('add-item', src, '--blueprint', RIOT, '--in-place', '--backup', join(dir, 'bak'));

@@ -29,6 +29,8 @@ add-item options:
   --quantity N          number of pieces, default 1 (written as ItemQuantity N-1, as the game does)
   --colors A,B,...      ItemColorID 0..5
   --blueprint-copy      upload as blueprint
+  --disallow-removal    write bAllowRemovalFromInventory=false (default true; with false ARK refuses
+                        the download)
   --custom-name S, --custom-description S, --crafter S, --tribe S, --ammo N
   --owner ID            OwnerPlayerDataID, default: the player's PlayerDataID from the file
   --upload-time T       unix seconds, default now
@@ -377,7 +379,8 @@ function addItemCommand(args: string[]): number {
     options: {
       blueprint: { type: 'string' }, stats: { type: 'string' }, quality: { type: 'string' }, rating: { type: 'string' },
       durability: { type: 'string' }, quantity: { type: 'string' }, colors: { type: 'string' },
-      'blueprint-copy': { type: 'boolean', default: false }, 'custom-name': { type: 'string' },
+      'blueprint-copy': { type: 'boolean', default: false }, 'disallow-removal': { type: 'boolean', default: false },
+      'custom-name': { type: 'string' },
       'custom-description': { type: 'string' }, crafter: { type: 'string' }, tribe: { type: 'string' }, ammo: { type: 'string' },
       owner: { type: 'string' }, 'upload-time': { type: 'string' }, 'expires-in': { type: 'string' },
       'expires-at': { type: 'string' }, 'item-id': { type: 'string' }, ...OUTPUT_OPTIONS,
@@ -403,6 +406,7 @@ function addItemCommand(args: string[]): number {
     quantity: number(values.quantity, 'quantity'),
     ammo: number(values.ammo, 'ammo'),
     isBlueprint: values['blueprint-copy'],
+    allowRemoval: !values['disallow-removal'],
     customName: values['custom-name'],
     customDescription: values['custom-description'],
     crafterName: values.crafter,
