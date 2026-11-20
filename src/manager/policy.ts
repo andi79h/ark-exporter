@@ -16,6 +16,9 @@ export const CONFIRMED_CRASHES = [
   'ShowActiveMissions', 'ShowAvailableMissionTags', 'ToggleDamageLogging', 'UnlockAllExplorerNotes',
 ];
 
+/** Commands after which the server no longer answers RCON (tested on ASE 358.24). */
+export const KILLS_RCON = ['SetGlobalPause'];
+
 /** Tested over RCON on ASE 358.24 without a crash and with the expected effect. */
 export const VERIFIED_COMMANDS = [
   'ListPlayers', 'ServerChat', 'ServerChatTo', 'ServerChatToPlayer', 'Broadcast', 'KickPlayer', 'BanPlayer', 'UnbanPlayer',
@@ -25,7 +28,7 @@ export const VERIFIED_COMMANDS = [
 
 /** Work over RCON but change or stop the whole map. */
 export const RISKY_COMMANDS = [
-  'DoExit', 'SetGlobalPause', 'DestroyWildDinos', 'DestroyAll', 'DestroyStructures', 'DestroyAllEnemies', 'SetTimeOfDay',
+  'DoExit', 'DestroyWildDinos', 'DestroyAll', 'DestroyStructures', 'DestroyAllEnemies', 'SetTimeOfDay',
   'AllowPlayerToJoinNoCheck', 'DisallowPlayerToJoinNoCheck', 'RenamePlayer', 'RenameTribe',
 ];
 
@@ -63,6 +66,7 @@ export interface PolicyResult {
 
 const lower = (list: readonly string[]) => new Set(list.map((s) => s.toLowerCase()));
 const CRASHES = lower(CONFIRMED_CRASHES);
+const RCON_KILLERS = lower(KILLS_RCON);
 const VERIFIED = lower(VERIFIED_COMMANDS);
 const RISKY = lower(RISKY_COMMANDS);
 const BUFFER = lower(BUFFER_COMMANDS);
@@ -86,6 +90,7 @@ export function checkCommand(line: string, options: PolicyOptions = {}): PolicyR
   const rconClass = CLASS_BY_LOWER.get(key) ?? 'not-listed';
   if (lower(options.extraDenied ?? []).has(key)) return deny('refused by configuration', { rconClass });
   if (CRASHES.has(key)) return deny('crashed the server in tests', { rconClass });
+  if (RCON_KILLERS.has(key)) return deny('the server stops answering RCON afterwards (tested)', { rconClass });
   if (rconClass === 'allowed-mypc' || rconClass === 'noguard-mypc') return deny('crash candidate (uses the missing player controller)', { rconClass });
   if (rconClass === 'blocked') return deny('does nothing over RCON (the server checks for RCON and stops)', { rconClass });
   if (rconClass === 'unknown') return deny('not classified, could not be checked', { rconClass });

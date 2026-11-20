@@ -33,6 +33,7 @@ test('RCON client: login, answers, keep-alive, wrong password, long commands', a
     ark.sendKeepAlive();
     assert.equal(await c.exec('SaveWorld'), 'World Saved');
     assert.equal(await c.exec('ServerChat hallo'), '', 'no-response text becomes empty');
+    assert.equal(await c.exec('KeepAliveTest'), 'real answer', 'keep-alive prefix is removed');
     const [a, b] = await Promise.all([c.exec('SaveWorld'), c.exec('ListPlayers')]);
     assert.equal(a, 'World Saved');
     assert.equal(b, 'No Players Connected');
@@ -67,6 +68,7 @@ test('command policy', () => {
   assert.match(checkCommand('GetChat', { externalBufferReader: true }).reason!, /BattleMetrics/);
   assert.equal(checkCommand('GetChat').ok, true);
   assert.equal(checkCommand('DoExit').level, 'risky');
+  assert.match(checkCommand('SetGlobalPause 1').reason!, /stops answering RCON/);
   assert.equal(checkCommand('ScriptCommand TCsAR AddArcTotal 76561198000000001 5').ok, true);
   assert.equal(checkCommand('ScriptCommand SomethingElse').ok, false);
   assert.equal(checkCommand('NoSuchCommand').ok, false);

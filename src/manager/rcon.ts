@@ -205,7 +205,8 @@ export class RconClient extends EventEmitter {
         this.pending = {
           id, timer,
           resolve: (body) => {
-            const text = body.replace(/\s+$/, '');
+            // idle keep-alives can end up in front of the next real answer
+            const text = body.replace(/^(?:Keep Alive\s*)+/, '').replace(/\s+$/, '');
             resolve(text === NO_RESPONSE ? '' : text);
           },
           reject,

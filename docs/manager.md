@@ -58,7 +58,8 @@ Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabe
 | Abgelehnt: `\|`-Ketten, Zeilenumbrüche, Nicht-ASCII, mehr als 480 Byte | nur der erste Befehl einer Kette läuft; Nicht-ASCII wird zu `?`; ab ~490 Byte trennt der Server die Verbindung |
 | `GetChat`/`GetGameLog` abgelehnt, wenn `externalBufferReader: true` | leeren den gemeinsamen Puffer |
 | Getestete Befehle (`ListPlayers`, `ServerChat`, `KickPlayer`, `BanPlayer` …): Recht `console` | |
-| Befehle mit großer Wirkung (`DoExit`, `DestroyWildDinos`, `SetGlobalPause` …): Recht `console.risky` | |
+| Abgelehnt: `SetGlobalPause` | danach antwortet der Server nicht mehr per RCON (getestet) |
+| Befehle mit großer Wirkung (`DoExit`, `DestroyWildDinos` …): Recht `console.risky` | |
 | Laut Analyse lauffähige, aber ungetestete Befehle: nur `superadmin`, auf Live-Karten zusätzlich mit `force`; in Triggern und Zeitplänen nie | |
 
 Textparameter, die nicht am Ende stehen, müssen in Anführungszeichen: `ServerChatTo "<SteamID>" Text`. Spielerbefehle wie `GiveItemToPlayer` verlangen die ARK-Spieler-ID, nicht die SteamID. Der Manager kennt sie aus den Admin-Logzeilen.

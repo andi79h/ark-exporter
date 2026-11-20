@@ -110,6 +110,8 @@ export class FakeArk {
         return `${args[0]} Kicked`;
       case 'saveworld':
         return 'World Saved';
+      case 'keepalivetest':
+        return 'Keep Alive\nreal answer';
       case 'gettribeidplayerlist':
         this.crash();
         return null;
