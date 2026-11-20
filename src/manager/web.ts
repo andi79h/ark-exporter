@@ -108,8 +108,11 @@ export class WebServer {
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) {
       const user = await this.manager.store.userByToken(tokenHash(auth.slice(7).trim()));
-      if (user && isRole(user.role)) return { name: user.name, type: 'api', role: user.role };
-      return null;
+      if (!user || !isRole(user.role)) return null;
+      // a portal acting for its own logged-in users names the person, so the audit log shows "portal:Name"
+      const onBehalf = req.headers['x-arkm-on-behalf-of'];
+      const who = typeof onBehalf === 'string' ? onBehalf.replace(/[^\p{L}\p{N} ._:@#()-]/gu, '').trim().slice(0, 80) : '';
+      return { name: who ? `${user.name}:${who}` : user.name, type: 'api', role: user.role };
     }
     const cookie = /(?:^|;\s*)arkm_session=([A-Za-z0-9_-]+)/.exec(req.headers.cookie ?? '')?.[1];
     const s = cookie ? this.sessions.get(cookie) : undefined;

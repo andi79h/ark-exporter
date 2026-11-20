@@ -167,6 +167,8 @@ Aktionen sind eine JSON-Liste. Beispiele:
 
 Jeder Aufruf außer `/api/login` braucht eine Anmeldung, entweder per Sitzungs-Cookie oder per `Authorization: Bearer <Token>`. Bei Cookie-Anmeldung brauchen ändernde Aufrufe zusätzlich den Header `X-ARKM: 1` (Schutz gegen Cross-Site-Requests). Die Rechte sind dieselben wie in der Oberfläche.
 
+Ein Portal, das mit einem eigenen Token für seine angemeldeten Benutzer handelt, schickt `X-ARKM-On-Behalf-Of: <Name>` mit. Im Audit-Log steht dann `<Token-Benutzer>:<Name>`. Es gelten die Rechte des Token-Benutzers.
+
 **Abfragen (GET)**
 
 | Pfad | Inhalt |

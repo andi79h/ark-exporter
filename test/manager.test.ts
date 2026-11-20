@@ -317,10 +317,14 @@ test('web API: login, roles, CSRF header, console and stream', async () => {
     assert.ok(ark.commands.includes('ScriptCommand TCsAR AddArcTotal 76561198000000005 5'));
     // a crash command cannot be saved
     assert.equal((await call(boss, 'POST', '/api/commands', { name: 'x', template: 'GetTribeIdPlayerList {{param.t}}' })).status, 400);
-    // token for scripts / the portal
-    await store.saveUser({ name: 'portal', role: 'moderator' });
-    const sup = { name: 'root', type: 'user', role: 'superadmin' } as Actor;
-    void sup;
+    // token for the portal, acting for one of its users
+    const tok = await (await fetch(`${base}/api/users/portal/token`, { method: 'POST', headers: { cookie: `arkm_session=${boss}`, 'x-arkm': '1' } })).json() as { error?: string };
+    assert.match(String(tok.error), /permission users/, 'admin may not create tokens');
+    await store.saveUser({ name: 'portal', role: 'moderator', tokenHash: (await import('../src/manager/auth.ts')).tokenHash('arkm_testtoken') });
+    const viaToken = await fetch(`${base}/api/broadcast`, { method: 'POST', headers: { authorization: 'Bearer arkm_testtoken', 'x-arkm-on-behalf-of': 'Jörg (Discord)', 'content-type': 'application/json' },
+      body: JSON.stringify({ maps: 'all', text: 'vom Portal' }) });
+    assert.equal(viaToken.status, 200, 'tokens need no CSRF header');
+    assert.ok((await store.auditLog({})).some((a) => a.actor === 'portal:Jörg (Discord)' && a.action === 'broadcast'));
     // event stream delivers events
     const ctrl = new AbortController();
     const stream = await fetch(`${base}/api/stream`, { headers: { cookie: `arkm_session=${mod}` }, signal: ctrl.signal });
