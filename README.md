@@ -18,6 +18,7 @@ Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**.
 | ARK: Survival Evolved, Save-Version 12 | noch nicht |
 | ARK: Survival Ascended (ASA) | noch nicht |
 | ASE-Cluster-Dateien (`clusters/<ClusterId>/<SteamID>`) | lesen und byte-genau zurückschreiben, Items anhängen (`ark-export cluster`, siehe [Cluster-Dateien](#cluster-dateien)) |
+| ARK: Survival Evolved, Save-Version 9, **schreiben** | byte-genau zurückschreiben, Bauteile löschen, Verfall zurücksetzen, Inventare leeren, Basen verschieben und drehen, kopieren, Bau-Vorlagen (`ark-export edit`, siehe [Spielstände ändern](#spielstände-ändern)) |
 
 ASA speichert ganz anders als ASE:
 - **Speicherform:** Die `.ark` ist selbst eine SQLite-Datenbank. Jedes Objekt liegt als Binärblock unter einer echten 16-Byte-UUID in der Tabelle `game`.
@@ -76,7 +77,7 @@ Jede Zeile hat einen Schlüssel, der Saves und Server-Neustarts überdauert. Zwi
 | `<Besitzer>/<Name>` | Komponenten (Inventar, Status) unter ihrem Besitzer |
 | `dino:…~2`, `~3` … | eingebettete Kopien mit derselben ID; der Ferox legt bei jeder Verwandlung seine alte Gestalt eine Ebene tiefer ab (bis zu 16 Ebenen gesehen) |
 
-Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Die Ursache ist noch unklar.
+Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Das Spiel schreibt sie selbst so; im Spiel ist es jeweils ein Bauteil.
 
 Die GUIDs der Objekttabelle sind als Schlüssel unbrauchbar: Sie sind zu 95 % leer, der Rest ist vielfach doppelt.
 
@@ -218,6 +219,8 @@ ark-export mysql --out DIR [--name N] --mysql URL   neuesten Stand und Verlauf n
 ark-export query <datei.sqlite> <SQL> [Parameter]   Zeilen als JSON Lines
 ark-export compare <alt.sqlite> <neu.sqlite>        welche Felder sich ändern
 ark-export cluster show|check|add-item ...          Cluster-Dateien, siehe unten
+ark-export edit verify|check|list|delete|decay|clear-inventory|move|copy|pattern-save|pattern-show|pattern-place ...
+                                                    Spielstände ändern, siehe unten
 ```
 
 - **`sync` und der Save:** `sync` nimmt pro `SavedArks`-Ordner den neuesten `.ark` (keine Zeitstempel-Sicherungen). Saves, die jünger als `--min-age` Sekunden sind, lässt es aus. Es läuft nie doppelt (Sperrdatei im Export-Ordner).
@@ -282,6 +285,112 @@ ark-export cluster copy-item <datei> --from DATEI --index N (--out DATEI | --in-
 - **Prüfungen:** wie bei `add-item`. Gelesen wird streng, und vor dem Schreiben wird alles erneut gelesen und zurückgeschrieben. Mit `--in-place` wird zuerst gesichert, dann atomar ersetzt. Ein Tier, dessen Archiv sich nicht byte-genau zurückschreiben lässt, wird nicht kopiert. Bei mehr als 20 Tieren in der Datei gibt es eine Warnung (`MaxTributeDinos`).
 - **Erprobt** an Kopien echter Dateien: 45 Cluster-Dateien mit 55 hochgeladenen Tieren, 7 Kryokapseln und 3 gefüllten Seelen lassen sich alle in leere und volle Dateien einsetzen. Aus einem echten Genesis-2-Spielstand gilt das für 4.570 von 4.571 Tieren aus Seelen, Recovery-Liste und Vivarien; die Ausnahme ist eine Ferox-Gestalt ohne Klassenpfad. Ob der Server ein so eingesetztes Tier zum Herunterladen anbietet, ist im Spiel zu prüfen (siehe [Offen](#offen)).
 
+## Spielstände ändern
+
+`ark-export edit` ändert `.ark`-Spielstände (ASE, Save-Version 9) und schreibt dabei immer eine **neue Datei**. Die Eingabe bleibt unberührt; `--out` darf nicht die Eingabe sein. Gedacht ist das für Admin-Dienste: einen Stand aus der Sicherung holen, ändern, auf einer Testinstanz laden und erst dann einspielen, während die Karte gestoppt ist.
+
+**Byte-genau.** Ein unveränderter Save wird byte-gleich zurückgeschrieben. `edit verify` beweist das für jede Datei auf drei Wegen:
+- Kopierpfad: unveränderte Objekte werden kopiert, nur Offsets neu berechnet.
+- Patchpfad: alle Objektverweise werden neu geschrieben, als hätten sich Indizes verschoben.
+- Vollständig neu kodiert: jedes Objekt, jede Eigenschaft, jedes eingebettete Archiv (Kryokapseln, Soul Traps) und jede serialisierte Eigenschaftsliste.
+
+Geprüft mit Saves von 15 Karten eines Community-Servers (46 MB bis 766 MB, zusammen 9,4 Mio. Objekte): alle drei Wege byte-identisch, 0 undurchsichtige Eigenschaften. Gen2 (613 MB, 1,6 Mio. Objekte) braucht dafür mit Bun rund 20 s und 7 GB RAM.
+
+**So arbeitet der Writer.**
+- **Unverändertes:** Unveränderte Objekte behalten ihre Bytes. Neu geschrieben werden nur geänderte und neue Objekte, und zwar aus dem verlustfreien Eigenschaftenbaum (`src/tree.ts`, dieselbe Schicht wie bei den Cluster-Dateien).
+- **Namen:** Namen laufen über die Namenstabelle der Datei. Neue Namen werden angehängt, die Reihenfolge der alten bleibt. Instanznummern folgen der Unreal-Regel (`Wall_Wood_C_12` = `Wall_Wood_C` + Instanz 13).
+- **Verweise:** Objektverweise (`ObjectProperty`) sind Positionen in der Objekttabelle. Werden Objekte gelöscht, rückt alles dahinter auf. Der Writer schreibt dann jeden Verweis in jedem Objekt um, auch in unveränderten; dafür findet ein Scanner die Stellen, ohne das Objekt zu dekodieren. Verweise auf gelöschte Objekte werden aus Arrays entfernt, einzelne werden „kein Objekt“ (-1). Neue Objekte kommen ans Ende der Tabelle.
+- **Hibernation:** Der Block wird unverändert übernommen. In allen geprüften Saves ist er leer; sonst warnt der Editor.
+
+**Nach jedem Schreiben** liest der Befehl die neue Datei mit dem Export-Leser vollständig zurück und bricht ab, wenn ein Byte nicht zugeordnet werden kann. `edit check` zählt außerdem, was das Spiel verwirren könnte, und der Bericht stellt die Werte vor und nach der Änderung gegenüber:
+- Verweise ins Leere,
+- Komponenten ohne ihren Actor,
+- doppelte ItemIDs und DinoIDs,
+- doppelte Actor-Namen,
+- einseitige `LinkedStructures`.
+
+```
+ark-export edit verify <Map.ark>...               byte-identisches Schreiben beweisen (liest nur)
+ark-export edit check <Map.ark>...                Konsistenz: Verweise, eindeutige IDs, Komponenten (liest nur)
+ark-export edit list <Map.ark> AUSWAHL [--full]   Auswahl zählen: Klassen, Besitzer, Bereich
+ark-export edit delete <Map.ark> AUSWAHL --out DATEI
+ark-export edit decay <Map.ark> AUSWAHL --out DATEI [--days N]
+ark-export edit clear-inventory <Map.ark> AUSWAHL --out DATEI [--engrams] [--equipped]
+ark-export edit move <Map.ark> AUSWAHL (--by DX,DY,DZ | --to X,Y,Z) [--rotate GRAD] [--pivot X,Y,Z]
+                     [--with-dinos] [--with-players] --out DATEI
+ark-export edit copy <Map.ark> AUSWAHL (--by … | --to …) [--rotate GRAD] [--items] BESITZER --out DATEI
+ark-export edit pattern-save <Map.ark> AUSWAHL --pattern DATEI [--anchor X,Y,Z[,YAW]] [--items] [--name N]
+ark-export edit pattern-show DATEI
+ark-export edit pattern-place <Map.ark> --pattern DATEI --at X,Y,Z[,YAW] BESITZER [--check] [--force]
+                     [--limit N] [--limit-radius R] [--margin M] --out DATEI
+```
+
+`AUSWAHL` besteht aus mindestens einem der folgenden Kriterien, mehrere gelten zusammen:
+- `--tribe ID`: `TargetingTeam`, also Stamm-ID oder Spieler-ID bei Einzelspielern.
+- `--owner NAME`: `OwnerName` bzw. `TribeName`.
+- `--box X1,Y1,Z1,X2,Y2,Z2`: Quader.
+- `--radius X,Y,R`: senkrechter Zylinder; `--radius X,Y,Z,R`: Kugel.
+- `--class MUSTER`: Klasse, `*` als Platzhalter, mehrfach möglich.
+- `--kind`: `structure` (Standard), `dino`, `pawn`, `actor`.
+
+`BESITZER` ist `--team ID [--tribe-name S] [--player-id N] [--player-name S]`.
+
+Koordinaten sind Unreal-Einheiten (100 = 1 m), wie sie der Admin-Befehl `ccc` im Spiel ausgibt: `x y z pitch yaw roll`.
+
+### Was die Operationen tun
+
+| Operation | Wirkung |
+|---|---|
+| `delete` | entfernt die Actors samt Komponenten (Inventar, Status, Bemalung) und den Items ihrer Inventare; Verweise anderer Objekte (`LinkedStructures`, `StructuresPlacedOnFloor`, `PlacedOnFloorStructure`, Inventarlisten, Sattel) werden bereinigt. `mayCollapse` nennt die verbleibenden Bauteile, die auf einem gelöschten standen oder daran hingen: Das Spiel prüft beim Laden ihren Halt und lässt sie gegebenenfalls einstürzen (im Servertest geschehen) |
+| `decay` | setzt `LastInAllyRangeTime` auf die Spielzeit des Saves (plus `--days`); der Verfall beginnt dann neu, als wäre gerade ein Stammesmitglied in der Nähe gewesen |
+| `clear-inventory` | entfernt die Items aus `InventoryItems` (mit `--equipped` auch ausgerüstete Items und Slots); Engramme von Werkbänken bleiben, außer mit `--engrams`; Zähler am Behälter (`CurrentItemCount`, bei Super-Structures-Lagern `ResourceCount`) werden angepasst |
+| `move` | verschiebt und dreht um die senkrechte Achse durch den Drehpunkt (Standard: Mitte der Auswahl auf ihrer tiefsten Höhe); Gier-Winkel und Weltkoordinaten in Eigenschaften (Rohr- und Kabelenden, Landeplätze) drehen mit; Bauteile auf Plattformsätteln folgen ihrem Tier; `--with-dinos`/`--with-players` nehmen zahme Tiere bzw. Spielerfiguren derselben Stämme im Bereich mit |
+| `copy` | wie `pattern-save` und `pattern-place` in einem Schritt, innerhalb desselben Saves |
+
+Die Rotation um die senkrechte Achse ist exakt, weil Unreal Rotationen in der Reihenfolge Gier, Nicken, Rollen zusammensetzt. Eine Drehung der ganzen Basis addiert sich also nur zum Gier-Winkel jedes Bauteils.
+
+### Bau-Vorlagen
+
+Ein Admin baut auf einer Testkarte ein Haus, eine Burg oder eine Windmühle. `pattern-save` schneidet den Bau als JSON-Vorlage aus. `pattern-place` setzt ihn an beliebiger Stelle wieder ein: auf jeder Karte, mit beliebiger Drehung und für jeden Stamm.
+
+```bash
+# Haus des Test-Stamms in einem Umkreis von 25 m herauslösen, leer (ohne Kisteninhalt)
+bin/ark-export edit pattern-save TestMap.ark --tribe 1234567 --radius 120000,80000,2500 --pattern haus.json --name haus
+# prüfen, ob am Zielort Platz ist (Exit-Code 2 bei Hindernissen)
+bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,60000,-1200,90 --team 7654321 --check
+# einsetzen, um 90° gedreht, für Stamm 7654321
+bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,60000,-1200,90 \
+  --team 7654321 --tribe-name "Die Neuen" --out TheIsland.neu.ark
+```
+
+**Doppelte Einträge.** Das Spiel schreibt manche Actors zweimal unter demselben Namen in den Save, mit gleichen Werten. Beim Laden ist das ein einziger Actor. Belegt ist das durch einen Servertest: Ein einmal eingesetztes Bauteil stand nach `saveworld` doppelt im Save. Eine Vorlage übernimmt deshalb je Name nur einen Eintrag und biegt Verweise auf den zweiten um (`duplicatesMerged`); sonst stünde jedes Bauteil nach dem Einsetzen zweimal da. `list` zählt beides (`count`, `uniqueNames`).
+
+**Inhalt einer Vorlage:**
+- Positionen relativ zu einem Anker. Ohne `--anchor` ist das die Mitte der Auswahl auf ihrer tiefsten Höhe.
+- Klassen, Namen und alle Eigenschaften verlustfrei.
+- Verweise innerhalb der Vorlage. Verweise nach außen, etwa auf einen Nachbarbau oder den Spieler, der gebaut hat, werden entfernt und in `droppedRefs` gezählt.
+- Mit `--items` auch die Kisteninhalte.
+
+**Beim Einsetzen ändert sich:**
+- Position und Gier-Winkel, auch Weltkoordinaten in Eigenschaften.
+- Objektnamen: neue Instanznummern, Komponenten folgen ihrem Actor.
+- `ItemId`, `DinoID1/2` und `BedID`: neu und im Ziel-Save eindeutig.
+- Besitzer: `TargetingTeam`, `OwnerName`, `OwningPlayerID/Name`.
+- Zeitstempel: Die Vorlage speichert sie relativ zur Spielzeit der Quelle und legt sie auf die Spielzeit des Ziels um. `OriginalCreationTime` und `LastInAllyRangeTime` werden „jetzt“.
+
+**Was beim Einsetzen schiefgehen kann:**
+
+| Risiko | Prüfung |
+|---|---|
+| Überlappung mit vorhandenen Bauten, Tieren, Spielern | blockiert (Quader um die gedrehte Vorlage plus `--margin`, Standard 1 m); `--force` setzt trotzdem |
+| Boden: der Save kennt kein Terrain | Warnung; der Bericht nennt als Anhalt die Höhen bekannter Objekte im Umkreis von 50 m (`nearbyZ`). Zielhöhe am besten im Spiel mit `ccc` auf dem Boden abnehmen und im Spiel kontrollieren |
+| Klassen, die im Ziel-Save nicht vorkommen (Mod dort nicht installiert?) | Warnung mit Klassenliste; Item-Klassen unter `/Game/Mods/` werden gezählt |
+| Bauteil-Limit | `--limit N --limit-radius R` blockiert, wenn danach mehr als N Bauteile im Umkreis R stehen (Spieleinstellung `TheMaxStructuresInRange`) |
+| Kryokapseln mit Tieren in der Vorlage | Warnung: jedes Einsetzen verdoppelt die Tiere darin |
+| Einseitige Verknüpfungen | werden wie im Original übernommen (auch Live-Saves haben viele) |
+
+Ob das Spiel einen so geänderten Save lädt, beweist nur ein Server. Der Ablauf dafür: Save laden, `saveworld`, den neuen Save wieder lesen. Erst danach gehört eine Änderung auf eine Live-Karte, und dort nur bei gestoppter Karte und mit frischer Sicherung.
+
 ## Laufzeit und Speicher
 
 Gemessen auf einem Mac (M5 Max) mit dem Gen2-Save, je Save:
@@ -331,17 +440,20 @@ Die Tests bauen kleine künstliche Saves (`test/build.ts`, `test/fixtures.ts`). 
 
 Aufbau:
 - `src/archive.ts`, `properties.ts`, `objects.ts`: Binärformat (lesen)
-- `tree.ts`, `writer.ts`: verlustfreier Eigenschaftenbaum und Schreiber
+- `tree.ts`, `writer.ts`, `nametable.ts`: verlustfreier Eigenschaftenbaum, Schreiber, Namenstabelle
 - `savegame.ts`, `container.ts`, `cluster.ts`: Dateitypen
+- `editor.ts`, `verify.ts`: `.ark` schreiben, Byte-Beweis, Konsistenz
+- `world.ts`, `operations.ts`, `pattern.ts`: Auswahl, Besitz, Operationen, Bau-Vorlagen
+- `inline.ts`: Objektgruppe aus einem `.ark` als Inline-Archiv (Form von Kryokapseln und Cluster-`DinoData`)
 - `normalize.ts`: Schlüssel, Verweise, flüchtige Felder
 - `snapshot.ts`, `history.ts`: Datenbanken
-- `cli.ts`, `cluster-cli.ts`: Befehle
+- `cli.ts`, `cluster-cli.ts`, `editor-cli.ts`: Befehle
 
 ## Offen
 
 - Bedeutung der `.arktributetribe`-Zahlen. Eine davon sieht wie ein Unix-Zeitstempel aus.
 - Bedeutung der zwei Vektorlisten nach jeder Spielerfigur, vermutlich letzte Positionen.
-- Doppelt gespeicherte Bauteile: Ursache klären.
+- Doppelt gespeicherte Bauteile: Das Spiel schreibt manche Actors zweimal unter demselben Namen (siehe [Spielstände ändern](#spielstände-ändern)). Offen ist, nach welcher Regel es das tut.
 - Verlauf schneller machen: ein Durchlauf über beide nach Schlüssel sortierten Snapshots statt mehrerer SQL-Joins.
 - Räumlicher Index (SQLite R*Tree) für Suchen nach Bewegungsmustern.
 - ARK: Survival Ascended (anderes Save-Format).
@@ -354,6 +466,14 @@ Aufbau:
   - Wann liest und schreibt der Server die Datei? Kann er eine gerade eingespielte Änderung mit einem älteren Stand überschreiben, etwa wenn der Spieler gleichzeitig hochlädt?
   - Bietet der Server ein mit `add-dino` eingesetztes Tier zum Herunterladen an? Wem gehört es danach: dem Abholer, wie `SpawnFromDinoDataEx(…, ForTeam, …)` vermuten lässt, oder weiter dem alten Stamm aus `TargetingTeam`?
   - Lässt sich eine mit `copy-item` kopierte Seele vom neuen Besitzer freilassen, obwohl darin noch die Stamm-ID des alten Besitzers steht?
+
+- Spielstände ändern, im Spiel zu klären:
+  - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?
+  - Halten verschobene Basen ihre Verbindungen (Stabilität, Strom, Wasser)?
+  - Wie verhält sich `PickupAllowedBeforeNetworkTime` bei eingesetzten Vorlagen?
+  - Lassen sich Bauteile mit gelöschten Nachbarn abreißen, und stürzen frei hängende Teile ein?
+  - Klassen umschreiben (Mod-Ersatz) und Mod-Inhalte aus fremden Inventaren entfernen.
+- Save-Version 10–11 schreiben (Stored-Data-Blöcke), ASA.
 
 ## Quellen und Lizenz
 
