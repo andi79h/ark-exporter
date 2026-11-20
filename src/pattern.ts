@@ -53,6 +53,8 @@ export interface Pattern {
   itemArchetypes: string[];
   /** References that pointed outside the pattern and were removed, by property name. */
   droppedRefs: Record<string, number>;
+  /** Same-name double entries of the source save that were merged into one object each. */
+  duplicatesMerged: number;
   /** Items holding embedded creatures (cryopods): placing the pattern twice duplicates those creatures. */
   embeddedCreatures: number;
   objects: PatternObject[];
@@ -152,6 +154,26 @@ function shiftTimes(list: Property[], delta: number): void {
   }
 }
 
+/** Object arrays that point at the same object twice after merging double entries keep it once. */
+function dedupeRefArrays(list: Property[]): void {
+  for (const p of list) {
+    if (p.opaque) continue;
+    if (p.type === 'ArrayProperty' && p.inner === 'ObjectProperty' && Array.isArray(p.value)) {
+      const seen = new Set<number>();
+      p.value = (p.value as TreeValue[]).filter((e) => {
+        if (!e || typeof e !== 'object' || !('index' in e) || typeof e.index !== 'number' || e.index === -1) return true;
+        if (seen.has(e.index)) return false;
+        seen.add(e.index);
+        return true;
+      });
+    } else if (p.type === 'StructProperty' && !isNativeStruct(p.inner) && Array.isArray(p.value)) {
+      dedupeRefArrays(p.value as Property[]);
+    } else if (p.type === 'ArrayProperty' && p.inner === 'StructProperty' && !p.elementStruct && Array.isArray(p.value)) {
+      for (const e of p.value as Property[][]) dedupeRefArrays(e);
+    }
+  }
+}
+
 function countEmbedded(list: Property[]): number {
   let n = 0;
   for (const p of list) {
@@ -172,8 +194,22 @@ function countEmbedded(list: Property[]): number {
 export function exportPattern(ed: SaveEditor, actors: number[], opts: ExportOptions = {}): Pattern {
   if (actors.length === 0) throw new Error('nothing selected');
   const set = ownedClosure(ed, actors, { items: opts.items === true });
-  const ids = [...set].sort((a, b) => a - b);
+  // The game writes some actors twice under the same name (same class, same values); they load as
+  // one actor. Keep one entry per name and point references to the other entry at the one kept,
+  // otherwise every placement would build those parts twice.
+  const sorted = [...set].sort((a, b) => a - b);
+  const first = new Map<string, number>();
+  const alias = new Map<number, number>();
+  for (const i of sorted) {
+    const h = ed.header(i);
+    const key = `${h.cls}|${h.names.join('/')}`;
+    const kept = first.get(key);
+    if (kept === undefined) first.set(key, i);
+    else alias.set(i, kept);
+  }
+  const ids = sorted.filter((i) => !alias.has(i));
   const local = new Map(ids.map((i, k) => [i, k]));
+  for (const [dup, kept] of alias) local.set(dup, local.get(kept)!);
   const objects = ids.map((i) => cloneObject(ed.get(i)));
 
   const points = objects.filter((o) => o.location).map((o) => o.location!);
@@ -198,6 +234,7 @@ export function exportPattern(ed: SaveEditor, actors: number[], opts: ExportOpti
       if (s.index !== -1 && !local.has(s.index)) dropped.set(s.path.join('.'), (dropped.get(s.path.join('.')) ?? 0) + 1);
     });
     remapRefs(o.props, (t) => local.get(t) ?? -1, true);
+    if (alias.size) dedupeRefArrays(o.props);
     if (o.isItem) {
       const at = o.props.find((p) => p.name === 'ItemArchetype');
       if (at && at.value && typeof at.value === 'object' && 'path' in at.value && at.value.path) archetypes.add(String(at.value.path));
@@ -218,7 +255,7 @@ export function exportPattern(ed: SaveEditor, actors: number[], opts: ExportOpti
     format: PATTERN_FORMAT, version: PATTERN_VERSION, name: opts.name ?? 'pattern',
     source: { map: opts.map ?? null, gameTime: ed.gameTime, created: new Date().toISOString() },
     anchor, bounds: rel, counts, classes, itemArchetypes: [...archetypes].sort(),
-    droppedRefs: Object.fromEntries(dropped), embeddedCreatures, objects: out,
+    droppedRefs: Object.fromEntries(dropped), duplicatesMerged: alias.size, embeddedCreatures, objects: out,
   };
 }
 

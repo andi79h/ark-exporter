@@ -118,7 +118,9 @@ function summary(entries: Entry[]): Record<string, unknown> {
     byOwner[k] = (byOwner[k] ?? 0) + 1;
   }
   const b = bounds(entries.filter((e) => e.location).map((e) => e.location!));
-  return { count: entries.length, bounds: b, byOwner, byClass };
+  // The game writes some actors twice under one name; they are one actor in game.
+  const unique = new Set(entries.map((e) => `${e.cls}|${e.name}`)).size;
+  return { count: entries.length, uniqueNames: unique, bounds: b, byOwner, byClass };
 }
 
 /** Writes next to the target, flushes, then renames. Refuses to overwrite the input or (without force) any file. */
@@ -252,7 +254,10 @@ export async function editCommand(argv: string[]): Promise<number> {
       const { ed, world } = load(input);
       const chosen = select(world, selection(values));
       const r = deleteObjects(ed, chosen.map((e) => e.index));
-      return finish(input, ed, values, { operation: 'delete', selected: chosen.length, ...r });
+      return finish(input, ed, values, {
+        operation: 'delete', selected: chosen.length, removed: r.removed, cleaned: r.cleaned,
+        mayCollapseCount: r.mayCollapse.length, mayCollapse: r.mayCollapse.slice(0, 50),
+      });
     }
     case 'decay': {
       const { ed, world } = load(input);

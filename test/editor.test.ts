@@ -170,6 +170,27 @@ test('delete: owned components and items go, references elsewhere are cleaned, i
   assert.equal(checkConsistency(SaveEditor.open(out)).refsOutOfRange, 0);
 });
 
+test('delete: structures that stood on or were snapped to removed ones are reported', () => {
+  const ed = SaveEditor.open(base());
+  const r = deleteObjects(ed, [0]); // foundation A: the wall stands on it, foundation B is linked to it
+  const byName = Object.fromEntries(r.mayCollapse.map((m) => [m.name, m.via.sort()]));
+  assert.deepEqual(byName, { Foundation_Wood_C_2: ['LinkedStructures'], Wall_Wood_C_7: ['LinkedStructures', 'PlacedOnFloorStructure'] });
+});
+
+test('pattern: double entries with the same name (as the game writes them) become one object', () => {
+  const objects: Obj[] = [
+    structure('Foundation_Wood_C', 'Foundation_Wood_C_1', [0, 0, 0], [refs('LinkedStructures', [1, 2])]),
+    structure('Wall_Wood_C', 'Wall_Wood_C_7', [0, 150, 150], [refs('LinkedStructures', [0]), ref('PlacedOnFloorStructure', 0)]),
+    structure('Wall_Wood_C', 'Wall_Wood_C_7', [0, 150, 150], [refs('LinkedStructures', [0]), ref('PlacedOnFloorStructure', 0)]),
+  ];
+  const ed = SaveEditor.open(buildSave(objects, { gameTime: GAME_TIME }));
+  const p = exportPattern(ed, [0, 1, 2]);
+  assert.equal(p.duplicatesMerged, 1);
+  assert.equal(p.objects.length, 2);
+  const f = jsonToTree(p.objects[0].props).find((x) => x.name === 'LinkedStructures')!;
+  assert.deepEqual(f.value, [{ index: 1 }]); // both entries pointed at the wall: once is enough
+});
+
 test('decay: LastInAllyRangeTime becomes the save time (plus extra days)', () => {
   const ed = SaveEditor.open(base());
   const w = indexWorld(ed);

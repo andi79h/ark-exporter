@@ -1,7 +1,7 @@
 // Editing operations on a .ark save: delete, refresh decay timers, empty inventories, move and rotate,
 // copy. Every operation works on the SaveEditor and leaves writing to the caller.
 import type { SaveEditor, SaveObject, Transform } from './editor.ts';
-import { cloneProperty, findProperty, isNativeStruct, type NativeValue, type Property, remapRefs, type TreeValue } from './tree.ts';
+import { cloneProperty, findProperty, forEachRef, isNativeStruct, type NativeValue, type Property, remapRefs, type TreeValue } from './tree.ts';
 import { classify, numberProp, ownedClosure, prop, referrers, type Vec3 } from './world.ts';
 
 // ---------------------------------------------------------------- delete
@@ -11,20 +11,36 @@ export interface DeleteResult {
   removed: number;
   /** Objects outside the set whose references were cleaned (removed from arrays, single ones set to none). */
   cleaned: number;
+  /**
+   * Remaining structures that stood on, hung on or were snapped to a removed one. The game checks
+   * their support when it loads the save and may let them collapse (seen in a test: a wall next to
+   * a removed wall section was gone after the next save).
+   */
+  mayCollapse: { index: number; cls: string; name: string; via: string[] }[];
 }
+
+/** References that carry weight: what a structure stands on or is snapped to. */
+const SUPPORT = new Set(['PlacedOnFloorStructure', 'PrimarySnappedStructureParent', 'LinkedStructures', 'SaddleDino']);
 
 export function deleteObjects(ed: SaveEditor, roots: Iterable<number>, opts: { items?: boolean } = {}): DeleteResult {
   const gone = ownedClosure(ed, roots, opts);
-  const cleaned = dropReferences(ed, gone);
+  const { cleaned, mayCollapse } = dropReferences(ed, gone);
   for (const i of gone) ed.remove(i);
-  return { removed: gone.size, cleaned };
+  return { removed: gone.size, cleaned, mayCollapse };
 }
 
 /** Removes references to the given objects from everything else (arrays shrink, single references become none). */
-function dropReferences(ed: SaveEditor, targets: Set<number>): number {
+function dropReferences(ed: SaveEditor, targets: Set<number>): { cleaned: number; mayCollapse: DeleteResult['mayCollapse'] } {
   const users = referrers(ed, targets);
-  for (const i of users) remapRefs(ed.edit(i).props, (t) => (targets.has(t) ? -1 : t), true);
-  return users.length;
+  const mayCollapse: DeleteResult['mayCollapse'] = [];
+  for (const i of users) {
+    const o = ed.edit(i);
+    const via = new Set<string>();
+    forEachRef(o.props, (s) => { if (targets.has(s.index) && SUPPORT.has(s.path[0])) via.add(s.path[0]); });
+    if (via.size && o.location && o.names.length === 1) mayCollapse.push({ index: i, cls: o.cls, name: o.names[0], via: [...via] });
+    remapRefs(o.props, (t) => (targets.has(t) ? -1 : t), true);
+  }
+  return { cleaned: users.length, mayCollapse };
 }
 
 // ---------------------------------------------------------------- decay
