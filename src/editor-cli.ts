@@ -7,7 +7,7 @@ import { ClassRemapper, OwnerIndex, parseMapping, type Scope, type TeamInfo } fr
 import { SaveEditor } from './editor.ts';
 import { clearInventories, deleteObjects, moveObjects, type Owner, type Placement, refreshDecay } from './operations.ts';
 import { checkPlacement, copyObjects, exportPattern, parsePattern, placePattern } from './pattern.ts';
-import { aggregateRefunds, refundCsv, removeClasses } from './removal.ts';
+import { aggregateRefunds, refundCsv, refundJson, removeClasses } from './removal.ts';
 import { readSave } from './savegame.ts';
 import { findProperty, type Property, readContainerTree, type TreeContainer, writeContainerTree } from './tree.ts';
 import { ReadContext } from './types.ts';
@@ -40,7 +40,7 @@ export const EDIT_USAGE = `Editing world saves (.ark, ASE save version 9) – wr
                                                    rewrite classes to replacements in every layer:
                                                    object table, paths, strings, cryopods, profiles, tribes
   ark-export edit remove-classes <Map.ark> (--class C | --package P)... [--assets FILE] [--trust-short-names]
-                       [--refund FILE.csv] [--grid UNITS] [--report FILE] (--dry-run | --out FILE)
+                       [--refund FILE.csv|.json] [--grid UNITS] [--report FILE] (--dry-run | --out FILE)
                                                    remove classes everywhere (also foreign inventories,
                                                    cryopods, soul traps) with a refund list per tribe
   ark-export edit asset-list <Content/Mods>...     asset paths of installed mods, input for --assets
@@ -54,7 +54,9 @@ SELECTION (at least one of tribe, owner, box, radius, class):
   --kind K,K             structure (default), dino, pawn, actor
 OWNER (copy, pattern-place): --team ID [--tribe-name S] [--player-id N] [--player-name S]
 Coordinates are Unreal units as shown by the in-game command "ccc" (x y z pitch yaw roll).
-MAPPING (remap-classes): tab-separated old_class, new_class, old_path, new_path [, only_mod_package].
+MAPPING (remap-classes): tab-separated old_class, new_class, old_path, new_path [, only_mod_package],
+or a JSON array of objects with these keys.
+Reports are JSON on stdout; with ARK_EXPORT_ERRORS=json errors are {"error": "..."} on stderr.
 Short class names in object headers change only when the save (or --assets) proves the name belongs
 to the old package alone; --trust-short-names overrides that. Full paths always need a full match.`;
 
@@ -497,7 +499,11 @@ export async function editCommand(argv: string[]): Promise<number> {
       const rows = aggregateRefunds(refunds, grid);
       const tribes = new Set(rows.map((x) => x.team));
       const report: Record<string, unknown> = { operation: 'remove-classes', dryRun: dry, map: basename(input), ...r, refund: { rows: rows.length, tribes: tribes.size, entries: refunds.length } };
-      if (values.refund) report.refundFile = writeOut(input, values.refund as string, [Buffer.from(refundCsv(map, rows))], values.force === true);
+      if (values.refund) {
+        const file = values.refund as string;
+        const text = /\.json$/i.test(file) ? `${JSON.stringify(refundJson(map, rows), null, 1)}\n` : refundCsv(map, rows);
+        report.refundFile = writeOut(input, file, [Buffer.from(text)], values.force === true);
+      }
       if (dry) { writeReport(values, input, report); print(report); return 0; }
       return finish(input, ed, values, report);
     }

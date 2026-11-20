@@ -310,7 +310,7 @@ ark-export edit pattern-place <Map.ark> --pattern DATEI --at X,Y,Z[,YAW] BESITZE
 ark-export edit remap-classes <Map.ark> --mapping DATEI [--assets DATEI] [--no-profiles] [--cluster VERZ]
                      [--trust-short-names] [--report DATEI] (--dry-run | --out DATEI [--out-dir VERZ])
 ark-export edit remove-classes <Map.ark> (--class MUSTER | --package PAKET)... [--assets DATEI]
-                     [--trust-short-names] [--refund DATEI.csv] [--grid EINHEITEN] [--report DATEI]
+                     [--trust-short-names] [--refund DATEI.csv|.json] [--grid EINHEITEN] [--report DATEI]
                      (--dry-run | --out DATEI)
 ark-export edit asset-list <Content/Mods>...      Asset-Pfade installierter Mods (Eingabe für --assets)
 ```
@@ -413,7 +413,7 @@ bin/ark-export edit asset-list /pfad/ShooterGame/Content/Mods > assets.txt
 cat core_assets.txt >> assets.txt
 ```
 
-**Mapping-Datei** (`remap-classes`): tabulatorgetrennt mit den Spalten `old_class`, `new_class`, `old_path`, `new_path` und optional `only_mod_package`. Eine Kopfzeile mit diesen Namen darf die Reihenfolge ändern, `#` leitet Kommentare ein. Pfade dürfen in jeder üblichen Form stehen (`/Game/A/B.B_C`, `/Game/A/B`, `Blueprint'/Game/A/B.B'`). Der Befehl prüft, dass Pfad und Klassenname zusammenpassen. `only_mod_package` (`StructuresPlusMod` oder `/Game/Mods/StructuresPlusMod`) legt fest, aus welchem Paket der Kurzname stammen muss. Ohne die Spalte gilt das Paket von `old_path`. Alle Zeilen gelten gleichzeitig: Bei A→B und B→C wird A zu B, nicht zu C.
+**Mapping-Datei** (`remap-classes`): tabulatorgetrennt (oder JSON, siehe unten) mit den Spalten `old_class`, `new_class`, `old_path`, `new_path` und optional `only_mod_package`. Eine Kopfzeile mit diesen Namen darf die Reihenfolge ändern, `#` leitet Kommentare ein. Pfade dürfen in jeder üblichen Form stehen (`/Game/A/B.B_C`, `/Game/A/B`, `Blueprint'/Game/A/B.B'`). Der Befehl prüft, dass Pfad und Klassenname zusammenpassen. `only_mod_package` (`StructuresPlusMod` oder `/Game/Mods/StructuresPlusMod`) legt fest, aus welchem Paket der Kurzname stammen muss. Ohne die Spalte gilt das Paket von `old_path`. Alle Zeilen gelten gleichzeitig: Bei A→B und B→C wird A zu B, nicht zu C.
 
 ```
 old_class	new_class	old_path	new_path	only_mod_package
@@ -468,6 +468,11 @@ Doppelt gespeicherte Actors zählen einmal, Engramme gar nicht (`engramsRemoved`
 | `remove-classes --package StructuresPlusMod` | 11 s | – | 687 S+-Klassen im Save: 665 eindeutig (31.002 Objekte, mit Inhalt 82.906 entfernt), 22 auch im Kernspiel (4.795 Objekte bleiben stehen); 3.458 Bauteile verlieren ihren Halt |
 
 Geschrieben (statt Trockenlauf) braucht ein Lauf auf Gen2 rund 20–26 s und 12,5 GB, weil der Befehl die neue Datei vollständig zurückliest und beide Stände auf Konsistenz prüft. Beim Umschreiben der S+-Lager blieben alle übrigen 1.607.407 Objekte byte-gleich. Zwei Läufe ergaben dieselbe Datei, und `edit verify` bestand auf beiden Ausgaben alle drei Wege.
+
+**Für Programme** (das geplante Webinterface ruft die CLI auf):
+- Eingabe: Die Mapping-Datei darf statt TSV ein JSON-Array mit denselben Schlüsseln sein, z. B. `[{"old_class": "…", "new_class": "…", "old_path": "…", "new_path": "…", "only_mod_package": "…"}]`. Fehler nennen dann die Position im Array.
+- Ausgabe: Der Bericht steht als JSON auf stdout, mit `--report DATEI` zusätzlich in einer Datei. `--refund DATEI.json` schreibt die Erstattungsliste als JSON-Zeilen mit den CSV-Spaltennamen.
+- Fehler: Exit-Code 1, mit `ARK_EXPORT_ERRORS=json` als `{"error": "…"}` auf stderr.
 
 **Vor dem Einspielen** gehört jeder Lauf zuerst auf eine Testinstanz: Save laden, Log prüfen, `saveworld`, den neuen Save mit `ark-export` lesen und mit dem Bericht vergleichen.
 

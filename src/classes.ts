@@ -308,48 +308,74 @@ export interface ClassRow {
 const COLUMNS = ['old_class', 'new_class', 'old_path', 'new_path', 'only_mod_package'] as const;
 
 /**
- * Mapping file: tab-separated old_class, new_class, old_path, new_path and optionally
- * only_mod_package; a header line with these names may give another column order. Empty lines and
- * lines starting with # are skipped. Rows apply simultaneously (A→B and B→C turn A into B, not C).
+ * Mapping file, as TSV or JSON. TSV: tab-separated old_class, new_class, old_path, new_path and
+ * optionally only_mod_package; a header line with these names may give another column order. Empty
+ * lines and lines starting with # are skipped. JSON (text starting with "["): an array of objects
+ * with the same keys, for programs calling the CLI. Rows apply simultaneously (A→B and B→C turn A
+ * into B, not C). Line numbers in errors and reports are the TSV line or the 1-based array position.
  */
 export function parseMapping(text: string): ClassRow[] {
   const rows: ClassRow[] = [];
-  let cols: string[] = [...COLUMNS];
-  let first = true;
-  const lines = text.split(/\r?\n/);
-  for (let n = 0; n < lines.length; n++) {
-    const raw = lines[n];
-    if (!raw.trim() || raw.trimStart().startsWith('#')) continue;
-    const cells = raw.split('\t').map((c) => c.trim());
-    if (first && cells.includes('old_class')) {
-      cols = cells.map((c) => c.toLowerCase());
-      for (const need of COLUMNS.slice(0, 4)) if (!cols.includes(need)) throw new RangeError(`mapping header lacks column ${need}`);
+  if (text.trimStart().startsWith('[')) {
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new RangeError(`mapping is not valid JSON: ${(e as Error).message}`);
+    }
+    if (!Array.isArray(data)) throw new RangeError('mapping JSON must be an array of rows');
+    data.forEach((e, k) => {
+      if (e === null || typeof e !== 'object' || Array.isArray(e)) throw new RangeError(`mapping entry ${k + 1}: expected an object`);
+      const o = e as Record<string, unknown>;
+      for (const key of Object.keys(o)) if (!(COLUMNS as readonly string[]).includes(key)) throw new RangeError(`mapping entry ${k + 1}: unknown key ${key}`);
+      const get = (c: string): string => {
+        const v = o[c];
+        if (v === undefined || v === null) return '';
+        if (typeof v !== 'string') throw new RangeError(`mapping entry ${k + 1}: ${c} must be a string`);
+        return v.trim();
+      };
+      rows.push(mappingRow(get, k + 1, `mapping entry ${k + 1}`, rows));
+    });
+  } else {
+    let cols: string[] = [...COLUMNS];
+    let first = true;
+    const lines = text.split(/\r?\n/);
+    for (let n = 0; n < lines.length; n++) {
+      const raw = lines[n];
+      if (!raw.trim() || raw.trimStart().startsWith('#')) continue;
+      const cells = raw.split('\t').map((c) => c.trim());
+      if (first && cells.includes('old_class')) {
+        cols = cells.map((c) => c.toLowerCase());
+        for (const need of COLUMNS.slice(0, 4)) if (!cols.includes(need)) throw new RangeError(`mapping header lacks column ${need}`);
+        first = false;
+        continue;
+      }
       first = false;
-      continue;
+      rows.push(mappingRow((c) => cells[cols.indexOf(c)] ?? '', n + 1, `mapping line ${n + 1}`, rows));
     }
-    first = false;
-    const get = (c: string): string => cells[cols.indexOf(c)] ?? '';
-    const where = `mapping line ${n + 1}`;
-    const oldClass = get('old_class');
-    const newClass = get('new_class');
-    for (const [k, v] of [['old_class', oldClass], ['new_class', newClass]]) {
-      if (!/^[\w-]+$/.test(v)) throw new RangeError(`${where}: ${k} "${v}" is not a class name`);
-    }
-    if (!get('old_path') || !get('new_path')) throw new RangeError(`${where}: old_path and new_path are required (full class paths)`);
-    const oldPath = classPath(get('old_path'));
-    const newPath = classPath(get('new_path'));
-    if (classOfPath(oldPath).toLowerCase() !== oldClass.toLowerCase()) throw new RangeError(`${where}: old_path names ${classOfPath(oldPath)}, old_class says ${oldClass}`);
-    if (classOfPath(newPath).toLowerCase() !== newClass.toLowerCase()) throw new RangeError(`${where}: new_path names ${classOfPath(newPath)}, new_class says ${newClass}`);
-    if (oldPath.toLowerCase() === newPath.toLowerCase()) throw new RangeError(`${where}: old and new path are the same`);
-    const pkg = get('only_mod_package');
-    const onlyPackage = pkg ? packagePrefix(pkg) : null;
-    if (onlyPackage && !inOrigin(oldPath, onlyPackage)) throw new RangeError(`${where}: old_path ${oldPath} is not inside ${onlyPackage}`);
-    const dup = rows.find((r) => r.oldClass.toLowerCase() === oldClass.toLowerCase() || r.oldPath.toLowerCase() === oldPath.toLowerCase());
-    if (dup) throw new RangeError(`${where}: ${oldClass} is mapped already in line ${dup.line}`);
-    rows.push({ line: n + 1, oldClass, newClass, oldPath, newPath, onlyPackage });
   }
   if (!rows.length) throw new RangeError('mapping has no rows');
   return rows;
+}
+
+function mappingRow(get: (column: string) => string, line: number, where: string, rows: ClassRow[]): ClassRow {
+  const oldClass = get('old_class');
+  const newClass = get('new_class');
+  for (const [k, v] of [['old_class', oldClass], ['new_class', newClass]]) {
+    if (!/^[\w-]+$/.test(v)) throw new RangeError(`${where}: ${k} "${v}" is not a class name`);
+  }
+  if (!get('old_path') || !get('new_path')) throw new RangeError(`${where}: old_path and new_path are required (full class paths)`);
+  const oldPath = classPath(get('old_path'));
+  const newPath = classPath(get('new_path'));
+  if (classOfPath(oldPath).toLowerCase() !== oldClass.toLowerCase()) throw new RangeError(`${where}: old_path names ${classOfPath(oldPath)}, old_class says ${oldClass}`);
+  if (classOfPath(newPath).toLowerCase() !== newClass.toLowerCase()) throw new RangeError(`${where}: new_path names ${classOfPath(newPath)}, new_class says ${newClass}`);
+  if (oldPath.toLowerCase() === newPath.toLowerCase()) throw new RangeError(`${where}: old and new path are the same`);
+  const pkg = get('only_mod_package');
+  const onlyPackage = pkg ? packagePrefix(pkg) : null;
+  if (onlyPackage && !inOrigin(oldPath, onlyPackage)) throw new RangeError(`${where}: old_path ${oldPath} is not inside ${onlyPackage}`);
+  const dup = rows.find((r) => r.oldClass.toLowerCase() === oldClass.toLowerCase() || r.oldPath.toLowerCase() === oldPath.toLowerCase());
+  if (dup) throw new RangeError(`${where}: ${oldClass} is mapped already in line ${dup.line}`);
+  return { line, oldClass, newClass, oldPath, newPath, onlyPackage };
 }
 
 // ---------------------------------------------------------------- remapping

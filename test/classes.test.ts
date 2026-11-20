@@ -182,6 +182,16 @@ test('mapping file: header, comments, validation', () => {
   assert.throws(() => parseMapping(`A_C\tB_C\t/Game/Mods/X/A.A_C\t/Game/Y/B.B_C\tOtherMod`), /not inside/);
   assert.throws(() => parseMapping(`A_C\tB_C\t/Game/Mods/X/A.A_C\t/Game/Y/B.B_C\nA_C\tC_C\t/Game/Mods/X/A.A_C\t/Game/Y/C.C_C`), /mapped already/);
   assert.throws(() => parseMapping('# nothing'), /no rows/);
+  // JSON for programs calling the CLI: the same keys, line = position in the array.
+  const json = parseMapping(JSON.stringify([
+    { old_class: 'A_C', new_class: 'B_C', old_path: '/Game/Mods/X/A.A_C', new_path: '/Game/Y/B.B_C', only_mod_package: 'X' },
+    { old_class: 'C_C', new_class: 'D_C', old_path: '/Game/Mods/X/C', new_path: '/Game/Y/D' },
+  ]));
+  assert.deepEqual(json.map((r) => [r.line, r.oldPath, r.onlyPackage]), [[1, '/Game/Mods/X/A.A_C', '/Game/Mods/X'], [2, '/Game/Mods/X/C.C_C', null]]);
+  assert.throws(() => parseMapping('[{"old_class":"A_C","new_klass":"B_C"}]'), /entry 1: unknown key new_klass/);
+  assert.throws(() => parseMapping('[1]'), /entry 1: expected an object/);
+  assert.throws(() => parseMapping('[{"old_class": 5}]'), /must be a string/);
+  assert.throws(() => parseMapping('[{'), /not valid JSON/);
 });
 
 test('paths, origins and evidence for short names', () => {
@@ -493,6 +503,23 @@ test('CLI: remap-classes and remove-classes, dry run writes nothing, profiles in
     assert.equal(r.status, 0, r.stderr);
     assert.equal(JSON.parse(r.stdout).removed, 8);
     assert.equal(readFileSync(join(dir, 'refund.csv'), 'utf8').split('\n').filter(Boolean).length, 11);
+    // Machine interface: mapping as JSON, refund list as JSON, errors as JSON.
+    const jsonMapping = join(dir, 'map.json');
+    writeFileSync(jsonMapping, JSON.stringify(parseMapping(MAPPING).map((x) => ({ old_class: x.oldClass, new_class: x.newClass, old_path: x.oldPath, new_path: x.newPath }))));
+    writeFileSync(save, remapSave());
+    r = run('remap-classes', save, '--mapping', jsonMapping, '--assets', join(dir, 'assets.txt'), '--dry-run', '--no-profiles');
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).objectsEdited, 4); // as with the TSV mapping
+    writeFileSync(save, removeSave());
+    r = run('remove-classes', save, '--package', 'ModPack', '--assets', assets, '--refund', join(dir, 'refund.json'), '--dry-run');
+    assert.equal(r.status, 0, r.stderr);
+    const refundRows = JSON.parse(readFileSync(join(dir, 'refund.json'), 'utf8'));
+    assert.equal(refundRows.length, 10);
+    assert.deepEqual(Object.keys(refundRows[0]), ['map', 'tribe_id', 'tribe_name', 'reason', 'kind', 'class', 'blueprint', 'objects', 'quantity', 'holder', 'x', 'y', 'z']);
+    const failing = spawnSync(process.execPath, [CLI, 'edit', 'remove-classes', save, '--dry-run'], { encoding: 'utf8', env: { ...process.env, ARK_EXPORT_ERRORS: 'json' } });
+    assert.equal(failing.status, 1);
+    assert.deepEqual(JSON.parse(failing.stderr), { error: 'nothing to remove: give --class or --package' });
+
     r = run('remove-classes', save, '--class', 'BP_ModBox_C', '--out', join(dir, 'removed.ark'));
     assert.equal(r.status, 0, r.stderr);
     assert.equal(JSON.parse(r.stdout).readBack.objects, 18 - 4);

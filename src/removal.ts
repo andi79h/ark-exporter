@@ -579,6 +579,14 @@ const csvCell = (v: string | number | boolean | null): string => {
 
 export const REFUND_COLUMNS = ['map', 'tribe_id', 'tribe_name', 'reason', 'kind', 'class', 'blueprint', 'objects', 'quantity', 'holder', 'x', 'y', 'z'];
 
+/** The aggregated refund list as JSON rows with the CSV column names (for programs calling the CLI). */
+export function refundJson(map: string, rows: RefundRow[]): Record<string, string | number | boolean | null>[] {
+  return rows.map((r) => ({
+    map, tribe_id: r.team, tribe_name: r.tribeName, reason: r.reason, kind: r.kind, class: r.cls, blueprint: r.blueprint,
+    objects: r.objects, quantity: r.quantity, holder: r.holder, x: r.x, y: r.y, z: r.z,
+  }));
+}
+
 /** CSV (comma, RFC 4180 quoting, header line) of the aggregated refund list. */
 export function refundCsv(map: string, rows: RefundRow[]): string {
   const lines = [REFUND_COLUMNS.join(',')];
