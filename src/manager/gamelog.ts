@@ -212,7 +212,8 @@ export class CommandLogSource extends EventEmitter implements LogSource {
   start(): void {
     this.stopped = false;
     const [cmd, ...args] = this.argv;
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // own process group, so stop() also ends grandchildren (e.g. ssh started by "sh -c")
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     this.child = child;
     let partial = '';
     child.stdout!.setEncoding('utf8');
@@ -235,7 +236,10 @@ export class CommandLogSource extends EventEmitter implements LogSource {
 
   stop(): void {
     this.stopped = true;
-    this.child?.kill();
+    const pid = this.child?.pid;
+    if (pid) {
+      try { process.kill(-pid, 'SIGTERM'); } catch { this.child?.kill(); }
+    }
     this.child = null;
   }
 }

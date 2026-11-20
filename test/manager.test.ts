@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { RconClient, RconError, parseListPlayers, toArkAscii, MAX_COMMAND_BYTES } from '../src/manager/rcon.ts';
 import { checkCommand } from '../src/manager/policy.ts';
-import { GameLogFollower, parseLogLine } from '../src/manager/gamelog.ts';
+import { CommandLogSource, GameLogFollower, parseLogLine } from '../src/manager/gamelog.ts';
+import { execFileSync } from 'node:child_process';
 import { cronMatches, nextRun, parseCron } from '../src/manager/cron.ts';
 import { buildConfig, readArkmanagerCfg } from '../src/manager/config.ts';
 import { openDb } from '../src/manager/db.ts';
@@ -126,6 +127,19 @@ test('log follower: resume, new file after restart, partial lines', async () => 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('log command: lines arrive, stop() also ends grandchildren', async () => {
+  const marker = `arkm-marker-${process.pid}`;
+  const src = new CommandLogSource(['sh', '-c', `sh -c 'while :; do echo ${marker}; sleep 0.1; done'`]);
+  const lines: string[] = [];
+  src.on('line', (l: string) => lines.push(l));
+  src.start();
+  await until(() => lines.length > 0);
+  src.stop();
+  await wait(300);
+  const left = (() => { try { return execFileSync('pgrep', ['-f', marker], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
+  assert.equal(left, '');
 });
 
 test('cron', () => {
