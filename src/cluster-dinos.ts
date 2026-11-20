@@ -590,6 +590,11 @@ export interface CopyItem {
   expiration?: number;
   /** Keep the DinoIDs of creatures inside. Default: new random IDs. */
   keepIds?: boolean;
+  /**
+   * bAllowRemovalFromInventory of the copy. Default true: ARK refused to download items with false
+   * (see NewItem.allowRemoval). null keeps the value of the source.
+   */
+  allowRemoval?: boolean | null;
 }
 
 export interface CopiedItem {
@@ -598,10 +603,29 @@ export interface CopiedItem {
   uploadTime: number;
   expiration: number;
   owner: string;
+  /** bAllowRemovalFromInventory of the source and of the copy (null: not in the item). */
+  allowRemovalBefore: boolean | null;
+  allowRemoval: boolean | null;
   creatures: { from: [number, number]; to: [number, number] }[];
 }
 
 const STEAM_ID = /^7656119\d{10}$/;
+
+/** Neighbours of bAllowRemovalFromInventory in the order the game writes ItemNetInfo, nearest first. */
+const REMOVAL_AFTER = ['bIsRepairing', 'bIsFoodRecipe', 'bIsCustomRecipe', 'bIsEngram', 'bIsBlueprint', 'SteamUserItemID', 'ItemQuantity'];
+
+/** Sets bAllowRemovalFromInventory, adding it after its usual neighbours if missing. Returns the old value. */
+function setAllowRemoval(info: Property[], value: boolean): boolean | null {
+  const p = findProperty(info, 'bAllowRemovalFromInventory');
+  if (p) {
+    const before = typeof p.value === 'boolean' ? p.value : null;
+    p.value = value;
+    return before;
+  }
+  const after = REMOVAL_AFTER.map((n) => info.findIndex((x) => x.name === n)).find((i) => i >= 0);
+  info.splice(after === undefined ? info.length : after + 1, 0, { name: 'bAllowRemovalFromInventory', type: 'BoolProperty', index: 0, value });
+  return null;
+}
 
 /**
  * Appends a copy of an ArkItems entry from another file with a new ItemID, upload time, expiry and
@@ -635,6 +659,13 @@ export function copyItem(
   const owner = o.owner === undefined ? defaultOwner(c) : BigInt(o.owner);
   if (findProperty(list, 'OwnerPlayerDataID')) findProperty(list, 'OwnerPlayerDataID')!.value = owner;
   if (o.steamId !== undefined && !STEAM_ID.test(o.steamId)) throw new RangeError(`not a SteamID64: ${o.steamId}`);
+  const flag = findProperty(list, 'bAllowRemovalFromInventory')?.value;
+  let allowRemovalBefore = typeof flag === 'boolean' ? flag : null;
+  let allowRemoval = allowRemovalBefore;
+  if (o.allowRemoval !== null) {
+    allowRemoval = o.allowRemoval ?? true;
+    allowRemovalBefore = setAllowRemoval(list, allowRemoval);
+  }
 
   const creatures: CopiedItem['creatures'] = [];
   const datas = findProperty(list, 'CustomItemDatas')?.value;
@@ -670,5 +701,8 @@ export function copyItem(
   if (arr.opaque || arr.elementStruct || !Array.isArray(arr.value)) throw new RangeError('ArkItems is not an array of structs');
   const items = arr.value as Property[][];
   items.push(entry);
-  return { tree, added: { index: items.length - 1, itemId, uploadTime, expiration, owner: owner.toString(), creatures } };
+  return {
+    tree,
+    added: { index: items.length - 1, itemId, uploadTime, expiration, owner: owner.toString(), allowRemovalBefore, allowRemoval, creatures },
+  };
 }

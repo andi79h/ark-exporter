@@ -83,6 +83,8 @@ export interface ClusterItem {
   stats: Value[];
   colors: Value[];
   isBlueprint: Value;
+  /** bAllowRemovalFromInventory. ARK did not let players download add-item items without it. */
+  allowRemoval: Value;
   customName: Value;
   customDescription: Value;
   crafterName: Value;
@@ -159,6 +161,7 @@ function itemView(entry: Property[], index: number, ctx: ReadContext): ClusterIt
     stats: staticArray(info, 'ItemStatValues', 8),
     colors: staticArray(info, 'ItemColorID', 6),
     isBlueprint: info.bIsBlueprint ?? null,
+    allowRemoval: info.bAllowRemovalFromInventory ?? null,
     customName: info.CustomItemName ?? null,
     customDescription: info.CustomItemDescription ?? null,
     crafterName: info.CrafterCharacterName ?? null,
@@ -241,6 +244,12 @@ export interface NewItem {
   colors?: number[];
   /** Upload the item as a blueprint. */
   isBlueprint?: boolean;
+  /**
+   * bAllowRemovalFromInventory. Default true: in the game test ARK refused to download add-item
+   * items with false (same file, true downloaded fine). Real uploads have it mixed, blueprints
+   * mostly false; whether blueprints need it is not tested yet.
+   */
+  allowRemoval?: boolean;
   customName?: string | null;
   customDescription?: string | null;
   crafterName?: string | null;
@@ -266,6 +275,8 @@ export interface AddedItem {
   /** Pieces, and ItemQuantity as written (pieces - 1). */
   quantity: number;
   quantityRaw: number;
+  /** bAllowRemovalFromInventory as written. */
+  allowRemoval: boolean;
   uploadTime: number;
   expiration: number;
   owner: string;
@@ -349,7 +360,7 @@ const pad = (values: number[] | undefined, n: number): number[] => Array.from({ 
  */
 export function tributeItemEntry(f: {
   archetype: string; itemId: [number, number]; quantityRaw: number; quality: number; rating: number; durability: number;
-  stats: number[]; colors: number[]; isBlueprint: boolean; customName: string | null; customDescription: string | null;
+  stats: number[]; colors: number[]; isBlueprint: boolean; allowRemoval: boolean; customName: string | null; customDescription: string | null;
   crafterName: string | null; crafterTribe: string | null; ammo: number; owner: bigint; uploadTime: number; expiration: number;
 }): Property[] {
   const info: Property[] = [
@@ -367,7 +378,9 @@ export function tributeItemEntry(f: {
       'bIsBlueprint', 'bIsEngram', 'bIsCustomRecipe', 'bIsFoodRecipe', 'bIsRepairing', 'bAllowRemovalFromInventory',
       'bHideFromInventoryDisplay', 'bAllowRemovalFromSteamInventory', 'bFromSteamInventory', 'bIsFromAllClustersInventory',
       'bForcePreventGrinding', 'bIsEquipped', 'bIsSlot', 'bIsInitialItem',
-    ], new Set(f.isBlueprint ? ['bIsBlueprint', 'bAllowRemovalFromSteamInventory'] : ['bAllowRemovalFromSteamInventory'])),
+    ], new Set([
+      'bAllowRemovalFromSteamInventory', ...(f.isBlueprint ? ['bIsBlueprint'] : []), ...(f.allowRemoval ? ['bAllowRemovalFromInventory'] : []),
+    ])),
     p('CraftQueue', 'UInt16Property', 0),
     p('NextCraftCompletionTime', 'DoubleProperty', 0),
     p('CraftingSkill', 'FloatProperty', 0),
@@ -452,13 +465,14 @@ export function addItem(
     } while (taken.has(`${itemId[0]}:${itemId[1]}`));
   }
   const quantity = checkInt(item.quantity ?? 1, 1, 2 ** 32, 'quantity');
+  const allowRemoval = item.allowRemoval ?? true;
   const entry = tributeItemEntry({
     archetype, itemId, uploadTime, expiration, owner,
     quantityRaw: quantity - 1,
     quality: checkInt(item.quality ?? 0, 0, 255, 'quality'),
     rating: checkFloat(item.rating ?? 0, 'rating'),
     durability: checkFloat(item.durability ?? 0, 'durability'),
-    stats, colors, isBlueprint: item.isBlueprint ?? false,
+    stats, colors, isBlueprint: item.isBlueprint ?? false, allowRemoval,
     customName: item.customName ?? null, customDescription: item.customDescription ?? null,
     crafterName: item.crafterName ?? null, crafterTribe: item.crafterTribe ?? null,
     ammo: checkInt(item.ammo ?? 0, 0, 2 ** 32 - 1, 'ammo'),
@@ -474,8 +488,8 @@ export function addItem(
   return {
     tree,
     added: {
-      index: list.length - 1, itemId, blueprint: archetype, quantity, quantityRaw: quantity - 1, uploadTime, expiration,
-      owner: owner.toString(),
+      index: list.length - 1, itemId, blueprint: archetype, quantity, quantityRaw: quantity - 1, allowRemoval, uploadTime,
+      expiration, owner: owner.toString(),
     },
   };
 }

@@ -33,6 +33,8 @@ add-item options:
   --quantity N          number of pieces, default 1 (written as ItemQuantity N-1, as the game does)
   --colors A,B,...      ItemColorID 0..5
   --blueprint-copy      upload as blueprint
+  --disallow-removal    write bAllowRemovalFromInventory=false (default true; with false ARK refuses
+                        the download)
   --custom-name S, --custom-description S, --crafter S, --tribe S, --ammo N
   --owner ID            OwnerPlayerDataID, default: the player's PlayerDataID from the file
   --upload-time T       unix seconds, default now
@@ -60,6 +62,8 @@ copy-item options:
   --steam-id ID         replace SteamIDs in the item's texts (owner of a Dino Storage soul),
                         default: the name of <file> if it is a SteamID
   --keep-ids            keep the DinoIDs of creatures inside; default: new random IDs
+  --keep-removal-flag   keep bAllowRemovalFromInventory of the source; default: set it to true
+                        (with false ARK refuses the download)
   --upload-time T, --expires-in S, --expires-at T   as for add-item
 
 recolor options:
@@ -347,7 +351,8 @@ function copyItemCommand(args: string[]): number {
     allowPositionals: true,
     options: {
       from: { type: 'string' }, index: { type: 'string' }, owner: { type: 'string' }, 'steam-id': { type: 'string' },
-      'keep-ids': { type: 'boolean', default: false }, 'upload-time': { type: 'string' }, 'expires-in': { type: 'string' },
+      'keep-ids': { type: 'boolean', default: false }, 'keep-removal-flag': { type: 'boolean', default: false },
+      'upload-time': { type: 'string' }, 'expires-in': { type: 'string' },
       'expires-at': { type: 'string' }, ...OUTPUT_OPTIONS,
     },
   });
@@ -365,7 +370,8 @@ function copyItemCommand(args: string[]): number {
   const tree = readClusterTree(before);
   const itemsBefore = clusterEntries(tree, 'ArkItems').length;
   const { tree: changed, added } = copyItem(tree, entry, {
-    owner: values.owner, steamId, keepIds: values['keep-ids'], uploadTime: unixTime(values['upload-time'], 'upload-time'),
+    owner: values.owner, steamId, keepIds: values['keep-ids'], allowRemoval: values['keep-removal-flag'] ? null : true,
+    uploadTime: unixTime(values['upload-time'], 'upload-time'),
     expiresIn: number(values['expires-in'], 'expires-in'), expiration: unixTime(values['expires-at'], 'expires-at'),
   });
   const after = writeClusterTree(changed);
@@ -376,6 +382,9 @@ function copyItemCommand(args: string[]): number {
   }
   if (!writeClusterTree(readClusterTree(after)).equals(after)) throw new Error('the written file does not round-trip');
   const { target, backup } = commit(src, before, after, values);
+  if (added.allowRemoval !== true) {
+    process.stderr.write(`warning: bAllowRemovalFromInventory of the copy is ${added.allowRemoval}; ARK may refuse the download\n`);
+  }
   print({
     file: target, backup, source: { file: from, index: Number(values.index), blueprint: readCluster(readFileSync(from)).items[Number(values.index)].blueprint },
     before: { bytes: before.length, sha256: sha256(before), items: itemsBefore },
@@ -448,7 +457,8 @@ function addItemCommand(args: string[]): number {
     options: {
       blueprint: { type: 'string' }, stats: { type: 'string' }, quality: { type: 'string' }, rating: { type: 'string' },
       durability: { type: 'string' }, quantity: { type: 'string' }, colors: { type: 'string' },
-      'blueprint-copy': { type: 'boolean', default: false }, 'custom-name': { type: 'string' },
+      'blueprint-copy': { type: 'boolean', default: false }, 'disallow-removal': { type: 'boolean', default: false },
+      'custom-name': { type: 'string' },
       'custom-description': { type: 'string' }, crafter: { type: 'string' }, tribe: { type: 'string' }, ammo: { type: 'string' },
       owner: { type: 'string' }, 'upload-time': { type: 'string' }, 'expires-in': { type: 'string' },
       'expires-at': { type: 'string' }, 'item-id': { type: 'string' }, ...OUTPUT_OPTIONS,
@@ -474,6 +484,7 @@ function addItemCommand(args: string[]): number {
     quantity: number(values.quantity, 'quantity'),
     ammo: number(values.ammo, 'ammo'),
     isBlueprint: values['blueprint-copy'],
+    allowRemoval: !values['disallow-removal'],
     customName: values['custom-name'],
     customDescription: values['custom-description'],
     crafterName: values.crafter,
