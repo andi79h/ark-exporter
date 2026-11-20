@@ -296,28 +296,28 @@ Geprüft mit Saves von 15 Karten eines Community-Servers (46 MB bis 766 MB, zusa
 ```
 ark-export edit verify <Map.ark>...               byte-identisches Schreiben beweisen (liest nur)
 ark-export edit check <Map.ark>...                Konsistenz: Verweise, eindeutige IDs, Komponenten (liest nur)
-ark-export edit list <Map.ark> AUSWAHL [--full]   Auswahl zählen: Klassen, Besitzer, Bereich
-ark-export edit delete <Map.ark> AUSWAHL --out DATEI
-ark-export edit decay <Map.ark> AUSWAHL --out DATEI [--days N]
-ark-export edit clear-inventory <Map.ark> AUSWAHL --out DATEI [--engrams] [--equipped]
-ark-export edit move <Map.ark> AUSWAHL (--by DX,DY,DZ | --to X,Y,Z) [--rotate GRAD] [--pivot X,Y,Z]
-                     [--with-dinos] [--with-players] --out DATEI
-ark-export edit copy <Map.ark> AUSWAHL (--by … | --to …) [--rotate GRAD] [--items] BESITZER --out DATEI
-ark-export edit pattern-save <Map.ark> AUSWAHL --pattern DATEI [--anchor X,Y,Z[,YAW]] [--items] [--name N]
-ark-export edit pattern-show DATEI
-ark-export edit pattern-place <Map.ark> --pattern DATEI --at X,Y,Z[,YAW] BESITZER [--check] [--force]
-                     [--limit N] [--limit-radius R] [--margin M] --out DATEI
+ark-export edit list <Map.ark> SELECTION [--full] Auswahl zählen: Klassen, Besitzer, Bereich
+ark-export edit delete <Map.ark> SELECTION --out FILE
+ark-export edit decay <Map.ark> SELECTION --out FILE [--days N]
+ark-export edit clear-inventory <Map.ark> SELECTION --out FILE [--engrams] [--equipped]
+ark-export edit move <Map.ark> SELECTION (--by DX,DY,DZ | --to X,Y,Z) [--rotate DEG] [--pivot X,Y,Z]
+                     [--with-dinos] [--with-players] --out FILE
+ark-export edit copy <Map.ark> SELECTION (--by … | --to …) [--rotate DEG] [--items] OWNER --out FILE
+ark-export edit pattern-save <Map.ark> SELECTION --pattern FILE [--anchor X,Y,Z[,YAW]] [--items] [--name N]
+ark-export edit pattern-show FILE
+ark-export edit pattern-place <Map.ark> --pattern FILE --at X,Y,Z[,YAW] OWNER [--check] [--force]
+                     [--limit N] [--limit-radius R] [--margin M] --out FILE
 ```
 
-`AUSWAHL` besteht aus mindestens einem der folgenden Kriterien, mehrere gelten zusammen:
+`SELECTION` besteht aus mindestens einem der folgenden Kriterien, mehrere gelten zusammen:
 - `--tribe ID`: `TargetingTeam`, also Stamm-ID oder Spieler-ID bei Einzelspielern.
 - `--owner NAME`: `OwnerName` bzw. `TribeName`.
 - `--box X1,Y1,Z1,X2,Y2,Z2`: Quader.
 - `--radius X,Y,R`: senkrechter Zylinder; `--radius X,Y,Z,R`: Kugel.
-- `--class MUSTER`: Klasse, `*` als Platzhalter, mehrfach möglich.
+- `--class C`: Klasse, `*` als Platzhalter, mehrfach möglich.
 - `--kind`: `structure` (Standard), `dino`, `pawn`, `actor`.
 
-`BESITZER` ist `--team ID [--tribe-name S] [--player-id N] [--player-name S]`.
+`OWNER` ist `--team ID [--tribe-name S] [--player-id N] [--player-name S]`.
 
 Koordinaten sind Unreal-Einheiten (100 = 1 m), wie sie der Admin-Befehl `ccc` im Spiel ausgibt: `x y z pitch yaw roll`.
 
@@ -339,12 +339,12 @@ Ein Admin baut auf einer Testkarte ein Haus, eine Burg oder eine Windmühle. `pa
 
 ```bash
 # Haus des Test-Stamms in einem Umkreis von 25 m herauslösen, leer (ohne Kisteninhalt)
-bin/ark-export edit pattern-save TestMap.ark --tribe 1234567 --radius 120000,80000,2500 --pattern haus.json --name haus
+bin/ark-export edit pattern-save TestMap.ark --tribe 1234567 --radius 120000,80000,2500 --pattern house.json --name house
 # prüfen, ob am Zielort Platz ist (Exit-Code 2 bei Hindernissen)
-bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,60000,-1200,90 --team 7654321 --check
+bin/ark-export edit pattern-place TheIsland.ark --pattern house.json --at -50000,60000,-1200,90 --team 7654321 --check
 # einsetzen, um 90° gedreht, für Stamm 7654321
-bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,60000,-1200,90 \
-  --team 7654321 --tribe-name "Die Neuen" --out TheIsland.neu.ark
+bin/ark-export edit pattern-place TheIsland.ark --pattern house.json --at -50000,60000,-1200,90 \
+  --team 7654321 --tribe-name "Die Neuen" --out TheIsland.new.ark
 ```
 
 **Doppelte Einträge.** Das Spiel schreibt manche Actors zweimal unter demselben Namen in den Save, mit gleichen Werten. Beim Laden ist das ein einziger Actor. Belegt ist das durch einen Servertest: Ein einmal eingesetztes Bauteil stand nach `saveworld` doppelt im Save. Eine Vorlage übernimmt deshalb je Name nur einen Eintrag und biegt Verweise auf den zweiten um (`duplicatesMerged`); sonst stünde jedes Bauteil nach dem Einsetzen zweimal da. `list` zählt beides (`count`, `uniqueNames`).
