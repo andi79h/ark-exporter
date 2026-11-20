@@ -296,34 +296,34 @@ Geprüft mit Saves von 15 Karten eines Community-Servers (46 MB bis 766 MB, zusa
 ```
 ark-export edit verify <Map.ark>...               byte-identisches Schreiben beweisen (liest nur)
 ark-export edit check <Map.ark>...                Konsistenz: Verweise, eindeutige IDs, Komponenten (liest nur)
-ark-export edit list <Map.ark> AUSWAHL [--full]   Auswahl zählen: Klassen, Besitzer, Bereich
-ark-export edit delete <Map.ark> AUSWAHL --out DATEI
-ark-export edit decay <Map.ark> AUSWAHL --out DATEI [--days N]
-ark-export edit clear-inventory <Map.ark> AUSWAHL --out DATEI [--engrams] [--equipped]
-ark-export edit move <Map.ark> AUSWAHL (--by DX,DY,DZ | --to X,Y,Z) [--rotate GRAD] [--pivot X,Y,Z]
-                     [--with-dinos] [--with-players] --out DATEI
-ark-export edit copy <Map.ark> AUSWAHL (--by … | --to …) [--rotate GRAD] [--items] BESITZER --out DATEI
-ark-export edit pattern-save <Map.ark> AUSWAHL --pattern DATEI [--anchor X,Y,Z[,YAW]] [--items] [--name N]
-ark-export edit pattern-show DATEI
-ark-export edit pattern-place <Map.ark> --pattern DATEI --at X,Y,Z[,YAW] BESITZER [--check] [--force]
-                     [--limit N] [--limit-radius R] [--margin M] --out DATEI
-ark-export edit remap-classes <Map.ark> --mapping DATEI [--assets DATEI] [--no-profiles] [--cluster VERZ]
-                     [--trust-short-names] [--report DATEI] (--dry-run | --out DATEI [--out-dir VERZ])
-ark-export edit remove-classes <Map.ark> (--class MUSTER | --package PAKET)... [--assets DATEI]
-                     [--trust-short-names] [--refund DATEI.csv|.json] [--grid EINHEITEN] [--report DATEI]
-                     (--dry-run | --out DATEI)
+ark-export edit list <Map.ark> SELECTION [--full] Auswahl zählen: Klassen, Besitzer, Bereich
+ark-export edit delete <Map.ark> SELECTION --out FILE
+ark-export edit decay <Map.ark> SELECTION --out FILE [--days N]
+ark-export edit clear-inventory <Map.ark> SELECTION --out FILE [--engrams] [--equipped]
+ark-export edit move <Map.ark> SELECTION (--by DX,DY,DZ | --to X,Y,Z) [--rotate DEG] [--pivot X,Y,Z]
+                     [--with-dinos] [--with-players] --out FILE
+ark-export edit copy <Map.ark> SELECTION (--by … | --to …) [--rotate DEG] [--items] OWNER --out FILE
+ark-export edit pattern-save <Map.ark> SELECTION --pattern FILE [--anchor X,Y,Z[,YAW]] [--items] [--name N]
+ark-export edit pattern-show FILE
+ark-export edit pattern-place <Map.ark> --pattern FILE --at X,Y,Z[,YAW] OWNER [--check] [--force]
+                     [--limit N] [--limit-radius R] [--margin M] --out FILE
+ark-export edit remap-classes <Map.ark> --mapping FILE [--assets FILE] [--no-profiles] [--cluster DIR]
+                     [--trust-short-names] [--report FILE] (--dry-run | --out FILE [--out-dir DIR])
+ark-export edit remove-classes <Map.ark> (--class C | --package PACKAGE)... [--assets FILE]
+                     [--trust-short-names] [--refund FILE.csv|.json] [--grid UNITS] [--report FILE]
+                     (--dry-run | --out FILE)
 ark-export edit asset-list <Content/Mods>...      Asset-Pfade installierter Mods (Eingabe für --assets)
 ```
 
-`AUSWAHL` besteht aus mindestens einem der folgenden Kriterien, mehrere gelten zusammen:
+`SELECTION` besteht aus mindestens einem der folgenden Kriterien, mehrere gelten zusammen:
 - `--tribe ID`: `TargetingTeam`, also Stamm-ID oder Spieler-ID bei Einzelspielern.
 - `--owner NAME`: `OwnerName` bzw. `TribeName`.
 - `--box X1,Y1,Z1,X2,Y2,Z2`: Quader.
 - `--radius X,Y,R`: senkrechter Zylinder; `--radius X,Y,Z,R`: Kugel.
-- `--class MUSTER`: Klasse, `*` als Platzhalter, mehrfach möglich.
+- `--class C`: Klasse, `*` als Platzhalter, mehrfach möglich.
 - `--kind`: `structure` (Standard), `dino`, `pawn`, `actor`.
 
-`BESITZER` ist `--team ID [--tribe-name S] [--player-id N] [--player-name S]`.
+`OWNER` ist `--team ID [--tribe-name S] [--player-id N] [--player-name S]`.
 
 Koordinaten sind Unreal-Einheiten (100 = 1 m), wie sie der Admin-Befehl `ccc` im Spiel ausgibt: `x y z pitch yaw roll`.
 
@@ -345,12 +345,12 @@ Ein Admin baut auf einer Testkarte ein Haus, eine Burg oder eine Windmühle. `pa
 
 ```bash
 # Haus des Test-Stamms in einem Umkreis von 25 m herauslösen, leer (ohne Kisteninhalt)
-bin/ark-export edit pattern-save TestMap.ark --tribe 1234567 --radius 120000,80000,2500 --pattern haus.json --name haus
+bin/ark-export edit pattern-save TestMap.ark --tribe 1234567 --radius 120000,80000,2500 --pattern house.json --name house
 # prüfen, ob am Zielort Platz ist (Exit-Code 2 bei Hindernissen)
-bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,60000,-1200,90 --team 7654321 --check
+bin/ark-export edit pattern-place TheIsland.ark --pattern house.json --at -50000,60000,-1200,90 --team 7654321 --check
 # einsetzen, um 90° gedreht, für Stamm 7654321
-bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,60000,-1200,90 \
-  --team 7654321 --tribe-name "Die Neuen" --out TheIsland.neu.ark
+bin/ark-export edit pattern-place TheIsland.ark --pattern house.json --at -50000,60000,-1200,90 \
+  --team 7654321 --tribe-name "Die Neuen" --out TheIsland.new.ark
 ```
 
 **Doppelte Einträge.** Das Spiel schreibt manche Actors zweimal unter demselben Namen in den Save, mit gleichen Werten. Beim Laden ist das ein einziger Actor. Belegt ist das durch einen Servertest: Ein einmal eingesetztes Bauteil stand nach `saveworld` doppelt im Save. Eine Vorlage übernimmt deshalb je Name nur einen Eintrag und biegt Verweise auf den zweiten um (`duplicatesMerged`); sonst stünde jedes Bauteil nach dem Einsetzen zweimal da. `list` zählt beides (`count`, `uniqueNames`).
@@ -425,7 +425,7 @@ BP_StorageLarge_C	StorageBox_Large_C	/Game/Mods/StructuresPlusMod/Misc/StorageLa
 - Instanznamen bleiben, wie sie sind: `BP_StorageLarge_C_12` heißt danach weiter so, nur mit der Klasse `StorageBox_Large_C`. Andere Objekte verweisen über diesen Namen, etwa Komponenten auf ihren Actor. Ob das Spiel abweichende Präfixe ohne Folgen hinnimmt, klärt erst ein Test auf einem Server.
 - Eingebettete Archive und Profile werden nur geschrieben, wenn sie zuvor byte-gleich zurückkodieren. Unbeteiligte Objekte und Dateien bleiben byte-gleich. Das Ergebnis ist deterministisch.
 - Geänderte `.arkprofile`- und `.arktribe`-Dateien neben dem Save landen in `--out-dir`, nie im Eingabeverzeichnis. `--no-profiles` lässt sie aus.
-- `--dry-run` macht alles außer Schreiben. `--report DATEI` hält den Bericht fest.
+- `--dry-run` macht alles außer Schreiben. `--report FILE` hält den Bericht fest.
 
 **Der Bericht** enthält je Zeile:
 - Treffer je Schicht (`found`), davon umgeschrieben (`rewritten`) und übersprungen (`skipped`), dazu Profile mit Treffern.
@@ -448,7 +448,7 @@ Stehen bleiben, und der Bericht zählt sie:
 - Pfad-Verweise in anderen Objekten wie Rezepte, Logs oder Belohnungspakete (`pathReferencesLeft`). Das Spiel löst sie ohne die Mod zu nichts auf.
 - Hochgeladene Items und Tiere in Cluster-Dateien sowie Profile. Beides fasst der Befehl nicht an.
 
-**Erstattungsliste** (`--refund DATEI.csv`, auch im Trockenlauf): eine Zeile je Stamm, Grund, Art, Klasse, Halter und Gebiet. Das Gebiet ist eine Rasterzelle von `--grid` Einheiten, Standard 10.000 = 100 m. Die Spalten:
+**Erstattungsliste** (`--refund FILE.csv`, auch im Trockenlauf): eine Zeile je Stamm, Grund, Art, Klasse, Halter und Gebiet. Das Gebiet ist eine Rasterzelle von `--grid` Einheiten, Standard 10.000 = 100 m. Die Spalten:
 - `map`, `tribe_id`, `tribe_name`.
 - `reason`: `class` = selbst von einer entfernten Klasse, `content` = lag darin oder darauf, etwa der Inhalt einer Mod-Kiste oder das Tier einer Mod-Seele.
 - `kind`: `structure`, `dino`, `item`, `actor`, `pawn`.
@@ -471,7 +471,7 @@ Geschrieben (statt Trockenlauf) braucht ein Lauf auf Gen2 rund 20–26 s und 12,
 
 **Für Programme** (das geplante Webinterface ruft die CLI auf):
 - Eingabe: Die Mapping-Datei darf statt TSV ein JSON-Array mit denselben Schlüsseln sein, z. B. `[{"old_class": "…", "new_class": "…", "old_path": "…", "new_path": "…", "only_mod_package": "…"}]`. Fehler nennen dann die Position im Array.
-- Ausgabe: Der Bericht steht als JSON auf stdout, mit `--report DATEI` zusätzlich in einer Datei. `--refund DATEI.json` schreibt die Erstattungsliste als JSON-Zeilen mit den CSV-Spaltennamen.
+- Ausgabe: Der Bericht steht als JSON auf stdout, mit `--report FILE` zusätzlich in einer Datei. `--refund FILE.json` schreibt die Erstattungsliste als JSON-Zeilen mit den CSV-Spaltennamen.
 - Fehler: Exit-Code 1, mit `ARK_EXPORT_ERRORS=json` als `{"error": "…"}` auf stderr.
 
 **Vor dem Einspielen** gehört jeder Lauf zuerst auf eine Testinstanz: Save laden, Log prüfen, `saveworld`, den neuen Save mit `ark-export` lesen und mit dem Bericht vergleichen.
