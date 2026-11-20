@@ -297,7 +297,11 @@ export function checkPlacement(ed: SaveEditor, p: Pattern, opts: PlaceOptions, w
     if (d < 5_000 && Math.abs(l.z - opts.at.z) < 5_000 && e.kind !== 'item') near.push(l.z);
     if (e.kind === 'structure' && Math.hypot(d, l.z - opts.at.z) < limitRadius) structuresInRange++;
   }
-  if (overlapping.length) blocking.push(`${overlapping.length} existing structures/creatures/players inside the target area`);
+  // Wild creatures (TargetingTeam below 50,000) walk away; tamed ones, structures and players block.
+  const isWild = (o: PlaceCheck['overlapping'][number]): boolean => o.kind === 'dino' && (o.team ?? 0) < 50_000;
+  const wild = overlapping.filter(isWild).length;
+  if (overlapping.length > wild) blocking.push(`${overlapping.length - wild} existing structures/tamed creatures/players inside the target area`);
+  if (wild) warnings.push(`${wild} wild creatures inside the target area`);
   const unknownClasses = Object.keys(p.classes).filter((c) => !known.has(c));
   if (unknownClasses.length) {
     warnings.push(`classes not used in the target save yet (fine for vanilla parts; for mod parts the mod must be installed there): ${unknownClasses.join(', ')}`);

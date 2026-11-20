@@ -327,7 +327,7 @@ Koordinaten sind Unreal-Einheiten (100 = 1 m), wie sie der Admin-Befehl `ccc` im
 |---|---|
 | `delete` | entfernt die Actors samt Komponenten (Inventar, Status, Bemalung) und den Items ihrer Inventare; Verweise anderer Objekte (`LinkedStructures`, `StructuresPlacedOnFloor`, `PlacedOnFloorStructure`, Inventarlisten, Sattel) werden bereinigt |
 | `decay` | setzt `LastInAllyRangeTime` auf die Spielzeit des Saves (plus `--days`); der Verfall beginnt dann neu, als wäre gerade ein Stammesmitglied in der Nähe gewesen |
-| `clear-inventory` | entfernt die Items aus `InventoryItems` (mit `--equipped` auch ausgerüstete Items und Slots); Engramme von Werkbänken bleiben, außer mit `--engrams` |
+| `clear-inventory` | entfernt die Items aus `InventoryItems` (mit `--equipped` auch ausgerüstete Items und Slots); Engramme von Werkbänken bleiben, außer mit `--engrams`; Zähler am Behälter (`CurrentItemCount`, bei Super-Structures-Lagern `ResourceCount`) werden angepasst |
 | `move` | verschiebt und dreht um die senkrechte Achse durch den Drehpunkt (Standard: Mitte der Auswahl auf ihrer tiefsten Höhe); Gier-Winkel und Weltkoordinaten in Eigenschaften (Rohr- und Kabelenden, Landeplätze) drehen mit; Bauteile auf Plattformsätteln folgen ihrem Tier; `--with-dinos`/`--with-players` nehmen zahme Tiere bzw. Spielerfiguren derselben Stämme im Bereich mit |
 | `copy` | wie `pattern-save` und `pattern-place` in einem Schritt, innerhalb desselben Saves |
 

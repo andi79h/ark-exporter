@@ -93,8 +93,42 @@ export function clearInventories(ed: SaveEditor, actors: Iterable<number>, opts:
       }
     }
   }
+  const owners = [...actors];
   const r = deleteObjects(ed, items);
+  for (const a of owners) syncItemCounts(ed, a);
   return { inventories, items: r.removed, kept };
+}
+
+/**
+ * Containers keep counters next to their inventory: CurrentItemCount (stacks, shown as "12/350")
+ * and, in Super Structures' dedicated storage, ResourceCount (pieces). They are set to what is left
+ * so the container does not show or hand out items that are gone.
+ */
+export function syncItemCounts(ed: SaveEditor, actor: number): void {
+  if (!ed.exists(actor)) return;
+  const p = ed.props(actor);
+  const hasStacks = findProperty(p, 'CurrentItemCount');
+  const hasPieces = findProperty(p, 'ResourceCount');
+  if (!hasStacks && !hasPieces) return;
+  let stacks = 0;
+  let pieces = 0;
+  for (const inv of inventoriesOf(ed, actor)) {
+    const v = prop(ed.props(inv), 'InventoryItems');
+    if (!Array.isArray(v)) continue;
+    for (const e of v) {
+      if (!e || typeof e !== 'object' || !('index' in e) || typeof e.index !== 'number' || !ed.exists(e.index)) continue;
+      const item = ed.props(e.index);
+      if (prop(item, 'bIsEngram') === true) continue;
+      stacks++;
+      const q = prop(item, 'ItemQuantity');
+      pieces += typeof q === 'number' ? q : 1;
+    }
+  }
+  const o = ed.edit(actor);
+  const s = findProperty(o.props, 'CurrentItemCount');
+  if (s && typeof s.value === 'number') s.value = stacks;
+  const r = findProperty(o.props, 'ResourceCount');
+  if (r && typeof r.value === 'number') r.value = pieces;
 }
 
 // ---------------------------------------------------------------- move and rotate

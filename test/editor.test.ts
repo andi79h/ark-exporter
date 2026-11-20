@@ -64,7 +64,7 @@ function base(gameTime = GAME_TIME): Buffer {
     structure('Foundation_Wood_C', 'Foundation_Wood_C_1', [1000, 1000, 0], [refs('LinkedStructures', [1, 2]), refs('StructuresPlacedOnFloor', [2])]),
     structure('Foundation_Wood_C', 'Foundation_Wood_C_2', [1300, 1000, 0], [refs('LinkedStructures', [0, 2]), refs('StructuresPlacedOnFloor', [3])]),
     structure('Wall_Wood_C', 'Wall_Wood_C_7', [1000, 1150, 150], [refs('LinkedStructures', [0, 1]), ref('PlacedOnFloorStructure', 0)]),
-    structure('StorageBox_Small_C', 'StorageBox_Small_C_3', [1300, 1000, 50], [ref('MyInventoryComponent', 4), ref('PlacedOnFloorStructure', 1), pathArray('PathsAndRef', ['/Game/X.X_C'], 1)]),
+    structure('StorageBox_Small_C', 'StorageBox_Small_C_3', [1300, 1000, 50], [ref('MyInventoryComponent', 4), ref('PlacedOnFloorStructure', 1), pathArray('PathsAndRef', ['/Game/X.X_C'], 1), int('CurrentItemCount', 1), int('ResourceCount', 99)]),
     { cls: 'PrimalInventoryBP_SmallStorage_C', names: ['PrimalInventoryBP_SmallStorage_C_1', 'StorageBox_Small_C_3'], props: [refs('InventoryItems', [5, 6]), bool('bInitializedMe', true)], extra: Buffer.alloc(4) },
     item('PrimalItemResource_Stone_C', 'PrimalItemResource_Stone_C_9', [11, 12], 4, [int('ItemQuantity', 99)]),
     item('PrimalItem_Engram_C', 'PrimalItem_Engram_C_2', [13, 14], 4, [bool('bIsEngram', true)]),
@@ -189,6 +189,9 @@ test('clear inventory: items removed, engrams kept, inventory list updated', () 
   const after = named(ed.write());
   assert.equal(after.has('PrimalItemResource_Stone_C_9'), false);
   assert.deepEqual(after.get('PrimalInventoryBP_SmallStorage_C_1/StorageBox_Small_C_3')!.props.InventoryItems, ['@PrimalItem_Engram_C_2']);
+  // Counters next to the inventory follow (engrams do not count).
+  assert.equal(after.get('StorageBox_Small_C_3')!.props.CurrentItemCount, 0);
+  assert.equal(after.get('StorageBox_Small_C_3')!.props.ResourceCount, 0);
   const ed2 = SaveEditor.open(base());
   assert.equal(clearInventories(ed2, [3], { keepEngrams: false }).items, 2);
 });
