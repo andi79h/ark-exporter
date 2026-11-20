@@ -4,7 +4,9 @@ import { chownSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readd
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { addItem, clusterEntries, type NewItem, readCluster, readClusterTree, writeClusterTree } from './cluster.ts';
-import { addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource } from './cluster-dinos.ts';
+import {
+  addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource, describeColors, recolorDino,
+} from './cluster-dinos.ts';
 import { readContainerTree, type TreeNotes, writeContainerTree } from './tree.ts';
 
 export const CLUSTER_USAGE = `Cluster files (clusters/<ClusterId>/<SteamID>):
@@ -18,6 +20,8 @@ export const CLUSTER_USAGE = `Cluster files (clusters/<ClusterId>/<SteamID>):
                                                      add a creature to the uploads (new DinoIDs, upload time now)
   ark-export cluster copy-item <file> --from FILE --index N (--out FILE | --in-place --backup DIR) [options]
                                                      copy an uploaded item (e.g. a filled soul) with new ItemID and owner
+  ark-export cluster recolor <file> (--dino A:B | --index N) --colors R=ID,... (--out FILE | --in-place --backup DIR)
+                                                     set the colour regions of an uploaded creature
 
 add-item options:
   --blueprint BP        item class: Blueprint'/Game/.../X.X', /Game/.../X.X_C or /Game/.../X
@@ -57,6 +61,14 @@ copy-item options:
                         default: the name of <file> if it is a SteamID
   --keep-ids            keep the DinoIDs of creatures inside; default: new random IDs
   --upload-time T, --expires-in S, --expires-at T   as for add-item
+
+recolor options:
+  --dino A:B            DinoID1:DinoID2 of the uploaded creature (see \`cluster dinos FILE\`)
+  --index N             position in its ArkTamedDinosData (see \`cluster show FILE\`)
+  --colors R=ID,...     region 0-5 = colour ID: 1-100 creature colours, 201-226 dyes, 0 = unused;
+                        regions left out keep their colour, e.g. --colors 0=14,4=27
+  --names game|keep     ColorSetNames: written like the game does (default) or left as they are
+  --any-color           allow IDs outside 1-100 and 201-226
 `;
 
 const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
@@ -79,6 +91,9 @@ function show(file: string, full: boolean): void {
     }),
     dinos: v.dinos.map((d) => (full ? d : {
       index: d.index, className: d.className, name: d.name, dinoId: d.dinoId, uploaded: iso(d.uploadTime),
+      colors: d.objects?.[0]
+        ? Array.from({ length: 6 }, (_, i) => d.objects![0].props[i ? `ColorSetIndices[${i}]` : 'ColorSetIndices'] ?? 0)
+        : null,
       objects: d.objects?.map((o) => o.cls) ?? null,
     })),
     characters: v.characters.map((c) => (full ? c : {
@@ -370,6 +385,62 @@ function copyItemCommand(args: string[]): number {
   return 0;
 }
 
+function parseColors(s: string): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const part of s.split(',')) {
+    const m = /^\s*(\d)\s*=\s*(\d{1,3})\s*$/.exec(part);
+    if (!m) throw new Error(`--colors: "${part}" is not REGION=ID`);
+    if (Number(m[1]) in out) throw new Error(`--colors: region ${m[1]} given twice`);
+    out[Number(m[1])] = Number(m[2]);
+  }
+  return out;
+}
+
+function recolorCommand(args: string[]): number {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      dino: { type: 'string' }, index: { type: 'string' }, colors: { type: 'string' }, names: { type: 'string', default: 'game' },
+      'any-color': { type: 'boolean', default: false }, ...OUTPUT_OPTIONS,
+    },
+  });
+  if (positionals.length !== 1) throw new Error('recolor needs exactly one cluster file');
+  if ((values.dino === undefined) === (values.index === undefined)) throw new Error('give either --dino A:B or --index N');
+  if (!values.colors) throw new Error('--colors is required');
+  if (values.names !== 'game' && values.names !== 'keep') throw new Error('--names must be game or keep');
+  checkOutput(values);
+  const src = resolve(positionals[0]);
+  if (!existsSync(src)) throw new Error(`${src} does not exist`);
+
+  const before = readTarget(src, values['in-place']);
+  const tree = readClusterTree(before);
+  if (!tree) throw new Error(`${src} is empty: no uploaded creatures`);
+  const dinosBefore = clusterEntries(tree, 'ArkTamedDinosData').length;
+  const { tree: changed, recolored } = recolorDino(
+    tree,
+    values.dino !== undefined ? { dinoId: pair(values.dino, '--dino') } : { index: number(values.index, 'index') },
+    { colors: parseColors(values.colors), names: values.names, anyColor: values['any-color'] },
+  );
+  const after = writeClusterTree(changed);
+  const check = creaturesInCluster(readClusterTree(after)).filter((s) => s.kind === 'upload');
+  const mine = check.find((s) => s.where === `ArkTamedDinosData[${recolored.index}]`);
+  if (check.length !== dinosBefore || !mine || mine.info.dinoId.join(':') !== recolored.dinoId.join(':') || mine.info.colors.join(',') !== recolored.after.join(',')) {
+    throw new Error('the written file does not read back as expected');
+  }
+  if (!writeClusterTree(readClusterTree(after)).equals(after)) throw new Error('the written file does not round-trip');
+  const { target, backup } = commit(src, before, after, values);
+  print({
+    file: target, backup,
+    dino: { index: recolored.index, dinoId: recolored.dinoId, cls: recolored.cls },
+    colors: { before: describeColors(recolored.before), after: describeColors(recolored.after) },
+    namesRewritten: recolored.names,
+    before: { bytes: before.length, sha256: sha256(before) },
+    after: { bytes: after.length, sha256: sha256(after) },
+  });
+  return 0;
+}
+
 function addItemCommand(args: string[]): number {
   const { values, positionals } = parseArgs({
     args,
@@ -459,6 +530,8 @@ export async function clusterCommand(argv: string[]): Promise<number> {
       return addDinoCommand(args);
     case 'copy-item':
       return copyItemCommand(args);
+    case 'recolor':
+      return recolorCommand(args);
     default:
       process.stdout.write(CLUSTER_USAGE);
       return sub && sub !== 'help' ? 2 : 0;
