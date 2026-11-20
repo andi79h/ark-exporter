@@ -328,7 +328,8 @@ export function itemIds(c: TreeContainer | null): Set<string> {
   return out;
 }
 
-function defaultOwner(c: TreeContainer | null): bigint {
+/** PlayerDataID of the uploaded character, else the most common owner of the items, else 0. */
+export function defaultOwner(c: TreeContainer | null): bigint {
   const player = clusterEntries(c, 'ArkPlayerData')[0];
   const id = player ? findProperty(player, 'PlayerDataID')?.value : undefined;
   if (typeof id === 'bigint') return id;
