@@ -11,6 +11,9 @@ import { SaveEditor, scanRefs } from '../src/editor.ts';
 import { NameTable } from '../src/nametable.ts';
 import { clearInventories, deleteObjects, moveObjects, refreshDecay } from '../src/operations.ts';
 import { copyObjects, exportPattern, jsonToTree, parsePattern, placePattern, treeToJson } from '../src/pattern.ts';
+import { toInlineArchive } from '../src/inline.ts';
+import { readEmbeddedArchive } from '../src/objects.ts';
+import { ReadContext } from '../src/types.ts';
 import { readSave } from '../src/savegame.ts';
 import { type Property, writePropertyList } from '../src/tree.ts';
 import { type GameObject, ObjectRef } from '../src/types.ts';
@@ -189,6 +192,23 @@ test('pattern: double entries with the same name (as the game writes them) becom
   assert.equal(p.objects.length, 2);
   const f = jsonToTree(p.objects[0].props).find((x) => x.name === 'LinkedStructures')!;
   assert.deepEqual(f.value, [{ index: 1 }]); // both entries pointed at the wall: once is enough
+});
+
+test('inline archive: a creature from a world save packed like a cryopod payload', () => {
+  const ed = SaveEditor.open(base());
+  const r = toInlineArchive(ed, [7]); // raptor with its status component
+  assert.deepEqual(r.indices, [7, 8]);
+  const e = readEmbeddedArchive(r.bytes, new ReadContext());
+  assert.ok(e, 'reads as an embedded archive');
+  assert.deepEqual(e!.objects.map((o) => o.names), [['Raptor_Character_BP_C_5'], ['DinoCharacterStatus_BP_Raptor_C_5', 'Raptor_Character_BP_C_5']]);
+  const status = e!.objects[0].props.MyCharacterStatusComponent as ObjectRef;
+  assert.equal(status.index, 1); // renumbered to archive order
+  assert.deepEqual(e!.objects[0].loc, { x: 1200, y: 900, z: 20, pitch: 0, yaw: 90, roll: 0 });
+  assert.deepEqual(r.droppedRefs, {});
+  // A structure with its inventory and items; the floor it stands on stays outside.
+  const box = toInlineArchive(ed, [3], { items: true });
+  assert.deepEqual(box.indices, [3, 4, 5, 6]);
+  assert.deepEqual(box.droppedRefs, { PlacedOnFloorStructure: 1, PathsAndRef: 1 });
 });
 
 test('decay: LastInAllyRangeTime becomes the save time (plus extra days)', () => {

@@ -428,6 +428,7 @@ Aufbau:
 - `savegame.ts`, `container.ts`, `cluster.ts`: Dateitypen
 - `editor.ts`, `verify.ts`: `.ark` schreiben, Byte-Beweis, Konsistenz
 - `world.ts`, `operations.ts`, `pattern.ts`: Auswahl, Besitz, Operationen, Bau-Vorlagen
+- `inline.ts`: Objektgruppe aus einem `.ark` als Inline-Archiv (Form von Kryokapseln und Cluster-`DinoData`)
 - `normalize.ts`: Schlüssel, Verweise, flüchtige Felder
 - `snapshot.ts`, `history.ts`: Datenbanken
 - `cli.ts`, `cluster-cli.ts`, `editor-cli.ts`: Befehle

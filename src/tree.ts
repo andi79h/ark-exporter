@@ -374,6 +374,22 @@ export function cloneProperty(p: Property): Property {
   return out;
 }
 
+/**
+ * Forgets the original bytes kept for unusual encodings. Needed before a tree goes into an archive
+ * of the other kind (name table <-> inline names): stored bytes of one kind are wrong in the other.
+ */
+export function dropRawBytes(list: Property[]): void {
+  for (const p of list) {
+    delete p.raw;
+    delete p.rawValue;
+    if (p.opaque) continue;
+    if (p.type === 'StructProperty' && Array.isArray(p.value) && !isNativeStruct(p.inner)) dropRawBytes(p.value as Property[]);
+    if (p.type === 'ArrayProperty' && p.inner === 'StructProperty' && !p.elementStruct && Array.isArray(p.value)) {
+      for (const e of p.value as Property[][]) dropRawBytes(e);
+    }
+  }
+}
+
 export function findProperty(list: Property[], name: string, index = 0): Property | undefined {
   return list.find((p) => p.name === name && p.index === index);
 }

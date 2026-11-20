@@ -252,7 +252,7 @@ export class SaveEditor {
   }
 
   private readHeader(i: number, observe: boolean): Omit<SaveObject, 'props' | 'extra'> {
-    const a = observe ? Archive.withTable(this.buf, this.table, this.hdrStart[i]) : new Archive(this.buf, this.table.names, this.hdrStart[i]);
+    const a = Archive.withTable(this.buf, this.table, this.hdrStart[i], observe);
     const guid = Buffer.from(a.bytes(16));
     const cls = a.name() ?? '';
     const isItem = a.i32();
@@ -269,7 +269,8 @@ export class SaveEditor {
   }
 
   private readBody(i: number, observe: boolean, notes?: TreeNotes): { props: Property[]; extra: Buffer } {
-    const a = observe ? Archive.withTable(this.buf, this.table, this.bodyStart[i]) : new Archive(this.buf, this.table.names, this.bodyStart[i]);
+    // The table is always attached: the tree compares its own encoding with the stored bytes.
+    const a = Archive.withTable(this.buf, this.table, this.bodyStart[i], observe);
     const props = readPropertyList(a, notes);
     if (a.pos > this.bodyEnd[i]) throw new RangeError(`property list of object ${i} overlaps the next one`);
     return { props, extra: Buffer.from(this.buf.subarray(a.pos, this.bodyEnd[i])) };

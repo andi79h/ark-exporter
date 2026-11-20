@@ -24,8 +24,10 @@ export class Archive {
   pos: number;
   /** Name table of a .ark file. null means names are stored inline as strings (profiles, tribes, cryopods). */
   names: string[] | null;
-  /** Set by the save editor: records how names were stored so they can be written back the same way. */
+  /** Set by the save editor: the name table, for writing names back the way they were stored. */
   table: NameTable | null = null;
+  /** Report every name read to the table (needed only when the object will be written back). */
+  observe = false;
 
   constructor(buf: Buffer, names: string[] | null = null, pos = 0) {
     this.buf = buf;
@@ -34,10 +36,11 @@ export class Archive {
     this.pos = pos;
   }
 
-  /** Reader for a .ark name table that also feeds the table's write-back encodings. */
-  static withTable(buf: Buffer, table: NameTable, pos = 0): Archive {
+  /** Reader for a .ark name table; with observe it also feeds the table's write-back encodings. */
+  static withTable(buf: Buffer, table: NameTable, pos = 0, observe = true): Archive {
     const a = new Archive(buf, table.names, pos);
     a.table = table;
+    a.observe = observe;
     return a;
   }
 
@@ -103,7 +106,7 @@ export class Archive {
     const s = this.names[idx - 1];
     if (s === undefined) throw new RangeError(`name index ${idx} outside name table at ${this.pos - 8}`);
     const rendered = inst ? `${s}_${inst - 1}` : s;
-    if (this.table) this.table.observe(rendered, idx, inst);
+    if (this.observe && this.table) this.table.observe(rendered, idx, inst);
     return rendered;
   }
 }
