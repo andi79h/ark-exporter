@@ -174,7 +174,7 @@ export function readEmbeddedArchive(bytes: Buffer, parent: ReadContext): Embedde
   }
   for (const [k, v] of ctx.issues) parent.note(`embedded: ${k}`, v);
   for (const [k, v] of ctx.rawBytes) parent.keepRaw(`embedded: ${k}`, v);
-  return new Embedded(objects);
+  return new Embedded(objects, bytes);
 }
 
 /**
