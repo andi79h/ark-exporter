@@ -2,6 +2,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { CLUSTER_USAGE, clusterCommand } from './cluster-cli.ts';
 import { pruneSnapshots, updateHistory } from './history.ts';
 import { VOLATILE_FIELDS } from './normalize.ts';
 import { readSave } from './savegame.ts';
@@ -22,6 +23,7 @@ Usage:
   ark-export mysql --out DIR [--name N] --mysql URL  copy newest snapshot and history to MySQL
   ark-export query <file.sqlite> <SQL> [params...]   print rows as JSON lines
   ark-export compare <old.sqlite> <new.sqlite>       which fields change between two snapshots
+  ark-export cluster show|check|add-item ...         cluster files, see below
 
 Options:
   --out DIR        export directory (one folder per map)
@@ -32,7 +34,8 @@ Options:
   --no-containers  leave out .arkprofile/.arktribe/.arktributetribe files
   --mysql URL      also keep MySQL up to date (run, sync): mysql://user:pass@host/db,
                    or @FILE with that URL; default: $ARK_EXPORT_MYSQL
-`;
+
+${CLUSTER_USAGE}`;
 
 function log(msg: string): void {
   process.stdout.write(`${new Date().toISOString()} ${msg}\n`);
@@ -173,6 +176,7 @@ async function compare(oldFile: string, newFile: string): Promise<void> {
 }
 
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === 'cluster') return clusterCommand(argv.slice(1));
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,

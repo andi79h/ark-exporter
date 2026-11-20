@@ -13,6 +13,17 @@ const ARRAY_NAME_TO_STRUCT: Record<string, string> = {
   CustomColours_60_7D3267C846B277953C0C41AEBD54FBCB: 'LinearColor',
 };
 
+/** Element struct type of a struct array when it holds native structs, else null (property lists). */
+export function nativeArrayStruct(propName: string, n: number, size: number): string | null {
+  const known = ARRAY_NAME_TO_STRUCT[propName];
+  if (known) return known;
+  // Arrays of native structs are recognised by their exact byte size.
+  if (n * 4 + 4 === size) return 'Color';
+  if (n * 12 + 4 === size) return 'Vector';
+  if (n * 16 + 4 === size) return 'LinearColor';
+  return null;
+}
+
 function objectRef(a: Archive, size: number, ctx: ReadContext): Value {
   if (size >= 8) {
     const kind = a.i32();
@@ -54,13 +65,7 @@ function readArray(a: Archive, elementType: string | null, size: number, propNam
   const out: Value[] = new Array(n);
   switch (elementType) {
     case 'StructProperty': {
-      let structType: string | null = ARRAY_NAME_TO_STRUCT[propName] ?? null;
-      if (structType === null) {
-        // Arrays of native structs are recognised by their exact byte size.
-        if (n * 4 + 4 === size) structType = 'Color';
-        else if (n * 12 + 4 === size) structType = 'Vector';
-        else if (n * 16 + 4 === size) structType = 'LinearColor';
-      }
+      const structType = nativeArrayStruct(propName, n, size);
       for (let i = 0; i < n; i++) out[i] = readStruct(a, structType, ctx);
       return out;
     }
