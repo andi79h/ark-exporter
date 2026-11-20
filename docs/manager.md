@@ -50,7 +50,7 @@ Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabe
 
 | Regel | Grund |
 |---|---|
-| Abgelehnt: Befehle, die im Test abgestürzt sind (`SetDay`, `GetTribeIdPlayerList`, `LevelUp`, `PlayerCommand` …) | Server-Absturz |
+| Abgelehnt: die 31 Befehle, die im Test abgestürzt sind (`SetDay`, `GetTribeIdPlayerList`, `LevelUp`, `PlayerCommand`, `Fly`, `Ghost` …) | Server-Absturz |
 | Abgelehnt: Befehle, die auf dem RCON-Pfad `MyPC` benutzen (74 + 2) | Absturzkandidaten |
 | Abgelehnt: Befehle, die bei RCON sofort abbrechen (172, z. B. `KillPlayer`, `DestroyTribeId`, `GiveExpToPlayer`) | wirkungslos, die Antwort sieht aber aus wie bei Erfolg |
 | Abgelehnt: unbekannte Befehle; `ScriptCommand` nur mit erlaubtem Unterbefehl (`scriptCommands`) | nicht geprüft |

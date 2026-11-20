@@ -6,11 +6,14 @@
 import { ASE_358_COMMANDS, type AseRconClass } from './ase-358-commands.ts';
 import { validateCommandLine } from './rcon.ts';
 
-/** Server crashes observed on a test server, regardless of the static class. */
+/** Commands that crashed an ASE 358.24 test server over RCON (31, command catalog test log), regardless of the static class. */
 export const CONFIRMED_CRASHES = [
-  'SetDay', 'GetTribeIdPlayerList', 'GTIDPL', 'DisableSpectator', 'EnableSpectator', 'GlobalObjectCount', 'LevelUp',
-  'PlayerCommand', 'ResetLiveTuningOverloads', 'ToggleDamageLogging', 'DrawDebugBoxForVolumes', 'DumpAssetProperties',
-  'SetChatLogMaxAgeInDays', 'SetNetworkTime',
+  'AddBuffPreventTagToSelf', 'DeepPockets', 'DisableSpectator', 'DrawDebugBoxForVolumes', 'DumpAssetProperties',
+  'DumpFallbackSeeds', 'EnableSpectator', 'ExportCurrentPlayerData', 'ExportTargetPlayerData', 'Fly', 'GTIDPL',
+  'GetTribeIdPlayerList', 'Ghost', 'GlobalObjectCount', 'LevelUp', 'ListMyBuffs', 'ListMyTargetBuffs',
+  'PlayerCommand', 'PlayersOnly', 'RequestUpdateActiveMissionTags', 'ResetLeaderboards', 'ResetLiveTuningOverloads',
+  'SendDataDogMetric', 'SetChatLogMaxAgeInDays', 'SetDay', 'SetDifficultyValue', 'SetNetworkTime',
+  'ShowActiveMissions', 'ShowAvailableMissionTags', 'ToggleDamageLogging', 'UnlockAllExplorerNotes',
 ];
 
 /** Tested over RCON on ASE 358.24 without a crash and with the expected effect. */
