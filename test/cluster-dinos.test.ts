@@ -222,6 +222,21 @@ test('copy-item: soul with new ItemID, owner, SteamID and DinoIDs', () => {
   const datas = findProperty(info, 'CustomItemDatas')!.value as Property[][];
   assert.deepEqual(findProperty(datas[1], 'CustomDataStrings')!.value, ['Rex_Character_BP_C_7', 'Rexi - Lvl 64 (Rex)', '0', PLAYER, REX, '9 10']);
   assert.equal(readCluster(file).items[0].itemId.join(':'), '500:600', 'the original stays');
+  // bAllowRemovalFromInventory: the shortened soul has none, the copy gets it (ARK refuses downloads without it).
+  assert.deepEqual([added.allowRemovalBefore, added.allowRemoval], [null, true]);
+  assert.equal(it.allowRemoval, true);
+  assert.equal(readCluster(file).items[0].allowRemoval, null, 'the original is not touched');
+  const names = info.map((p) => p.name);
+  assert.equal(names.indexOf('bAllowRemovalFromInventory'), names.indexOf('ItemQuantity') + 1, 'next to its usual neighbours');
+  // A source with false: set to true by default, kept with allowRemoval null.
+  const locked = clusterEntries(readClusterTree(file), 'ArkItems')[1];
+  findProperty(findProperty(locked, 'ArkTributeItem')!.value as Property[], 'bAllowRemovalFromInventory')!.value = false;
+  const fixed = copyItem(null, locked, { owner: 5 });
+  assert.deepEqual([fixed.added.allowRemovalBefore, fixed.added.allowRemoval], [false, true]);
+  assert.equal(readCluster(writeClusterTree(fixed.tree)).items[0].allowRemoval, true);
+  const keep = copyItem(null, locked, { owner: 5, allowRemoval: null });
+  assert.deepEqual([keep.added.allowRemovalBefore, keep.added.allowRemoval], [false, false]);
+  assert.equal(readCluster(writeClusterTree(keep.tree)).items[0].allowRemoval, false);
   // keepIds leaves creatures and their texts alone
   const kept = copyItem(null, entry, { keepIds: true, owner: 5 }).added;
   assert.deepEqual(kept.creatures, []);
@@ -299,6 +314,8 @@ test('cluster CLI: dinos, add-dino --out / --in-place, copy-item', () => {
     const copy = JSON.parse(r3.stdout);
     assert.equal(copy.added.steamId, PLAYER, 'SteamID from the file name');
     assert.equal(copy.added.creatures.length, 1);
+    assert.equal(copy.added.allowRemoval, true);
+    assert.equal(r3.stderr, '', 'no warning when the copy can be downloaded');
     const v = readCluster(readFileSync(target));
     assert.equal(v.items.length, 1);
     assert.equal(v.dinos.length, 1);
