@@ -91,6 +91,8 @@ test('game log lines', () => {
   assert.deepEqual([d.type, d.name, d.detail], ['death', 'Tomas', 'a Sarco - Lvl 145 ()']);
   assert.equal(parseLogLine('[2026.10.02-20.29.49:463][1]2026.10.02_20.29.49: Bob - Lvl 77 (Die Wilden) was killed! [KillerSID: 11112222]')!.tribe, 'Die Wilden');
   assert.equal(parseLogLine('[2026.11.19-04.12.11:406][ 56]2026.11.19_04.12.11: Nov 19, 2026, 5:12:11 AM [TCsAR] Server || Loaded 788 Players')!.type, 'mod');
+  assert.equal(parseLogLine('[2026.11.19-04.12.11:406][ 56]2026.11.19_04.12.11: Nov 19, 2026, 5:12:11 AM [TCsAR] Server || APIKey: abc123')!.text, 'Server || APIKey: ***');
+  assert.equal(parseLogLine('[2026.11.19-04.12.11:406][ 56]2026.11.19_04.12.11: Nov 19, 2026, 5:12:11 AM [TCsAR] Server || PackLinkKey: ')!.text, 'Server || PackLinkKey:');
   // the same text over RCON GetGameLog has no bracket
   assert.equal(parseLogLine('2026.11.19_05.03.29: Björn joined this ARK!')!.ts, Date.UTC(2026, 10, 19, 5, 3, 29));
 });

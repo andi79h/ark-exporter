@@ -32,6 +32,11 @@ export interface LogEvent {
 const RCON_LINE = /^﻿?(\d{4})\.(\d\d)\.(\d\d)_(\d\d)\.(\d\d)\.(\d\d): (.*)$/;
 const LINE = /^﻿?\[(\d{4})\.(\d\d)\.(\d\d)-(\d\d)\.(\d\d)\.(\d\d):(\d{3})\]\[\s*\d+\](?:\d{4}\.\d\d\.\d\d_\d\d\.\d\d\.\d\d: )?(.*)$/;
 
+/** Mods dump their settings into the log (e.g. TCsAutoRewards "APIKey: …"): never store such values. */
+export function redactSecrets(text: string): string {
+  return text.replace(/\b((?:api|link|secret|private|access)?\s*(?:key|token|password|passwd|secret))(\s*[:=]\s*)(\S+)/gi, (_, k: string, sep: string) => `${k}${sep}***`);
+}
+
 export function stripRichText(text: string): string {
   return text.replace(/<RichColor[^>]*>/gi, '').replace(/<\/>/g, '').replace(/<\/?[A-Za-z]+[^>]*>/g, '').trim();
 }
@@ -55,7 +60,11 @@ export function parseLogLine(raw: string, fallbackTs = Date.now()): LogEvent | n
   }
   // ASA adds " [UniqueNetId:… Platform:…]" to join/leave lines
   const msg = body.replace(/\s*\[UniqueNetId:[^\]]*\]/, '');
-  const ev = (type: LogEventType, extra: Partial<LogEvent> = {}): LogEvent => ({ ts, type, text: stripRichText(msg), raw: line, ...extra });
+  const ev = (type: LogEventType, extra: Partial<LogEvent> = {}): LogEvent => {
+    const e = { ts, type, text: stripRichText(msg), raw: line, ...extra };
+    if (type === 'mod' || type === 'other') { e.text = redactSecrets(e.text); e.raw = redactSecrets(e.raw); }
+    return e;
+  };
   let p: RegExpExecArray | null;
   if ((p = /^(.*) joined this ARK!$/.exec(msg))) return ev('join', { name: p[1] });
   if ((p = /^(.*) left this ARK!$/.exec(msg))) return ev('leave', { name: p[1] });
@@ -73,7 +82,7 @@ export function parseLogLine(raw: string, fallbackTs = Date.now()): LogEvent | n
   if ((p = /^(.+?) - Lvl \d+ \(([^)]*)\) was killed(?: by (.+?))?!(?: \[KillerSID: \d+\])?$/.exec(msg))) {
     return ev('death', { name: p[1], tribe: p[2] || undefined, detail: p[3] });
   }
-  if ((p = /^[A-Z][a-z]{2} \d+, \d{4}, [\d:]+ [AP]M \[([^\]]+)\] (.*)$/.exec(msg))) return ev('mod', { detail: p[1], text: p[2] });
+  if ((p = /^[A-Z][a-z]{2} \d+, \d{4}, [\d:]+ [AP]M \[([^\]]+)\] (.*)$/.exec(msg))) return ev('mod', { detail: p[1], text: p[2].trim() });
   if ((p = /^(.+?) \(([^()]*)\): (.*)$/.exec(msg)) && !/ - Lvl \d+/.test(p[1])) {
     return ev('chat', { name: p[1], character: p[2], text: p[3] });
   }
