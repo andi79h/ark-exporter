@@ -83,6 +83,8 @@ export const structArray = (name: string, items: Prop[][]): Prop => ({
 });
 
 export interface Obj {
+  /** 16 bytes, default zero. */
+  guid?: Buffer;
   cls: string;
   names: string[];
   isItem?: boolean;
@@ -93,7 +95,7 @@ export interface Obj {
 }
 
 function writeHeader(w: Writer, o: Obj, propOffset: number): void {
-  w.bytes(Buffer.alloc(16)).name(o.cls).i32(o.isItem ? 1 : 0).i32(o.names.length);
+  w.bytes(o.guid ?? Buffer.alloc(16)).name(o.cls).i32(o.isItem ? 1 : 0).i32(o.names.length);
   for (const n of o.names) w.name(n);
   w.i32(0).i32(0);
   if (o.loc) w.i32(1).f32(o.loc[0]).f32(o.loc[1]).f32(o.loc[2]).f32(0).f32(90).f32(0);

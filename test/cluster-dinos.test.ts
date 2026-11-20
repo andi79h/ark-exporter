@@ -2,17 +2,18 @@
 // All files are synthetic (test/build.ts); real cluster files hold SteamIDs and names.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { classPathsInNames, InstallDir } from '../src/class-paths.ts';
 import { clusterEntries, readCluster, readClusterTree, writeClusterTree } from '../src/cluster.ts';
 import {
   addDino, copyItem, creatureBlueprint, creatureId, creaturesInCluster, creaturesInSave, dinoStatTexts, readCreatureArchive,
 } from '../src/cluster-dinos.ts';
-import { findProperty, type Property, sameValue } from '../src/tree.ts';
+import { findProperty, type Property, readContainerTree, sameValue, writeContainerTree } from '../src/tree.ts';
 import {
-  buildContainer, buildEmbedded, buildSave, bytesArray, float, int, path, type Prop, str, struct, structArray, u64,
+  bool, buildContainer, buildEmbedded, buildSave, bytesArray, double, float, int, type Obj, path, type Prop, str, struct, structArray, u64,
 } from './build.ts';
 
 const CLI = join(import.meta.dirname, '..', 'src', 'cli.ts');
@@ -34,11 +35,12 @@ const paths = (name: string, list: string[]): Prop => ({
 });
 
 /** A creature archive like DinoData: creature, status component, inventory component. */
-function creature(cls: string, id: [number, number], o: { name?: string; team?: number } = {}): Buffer {
+function creature(cls: string, id: [number, number], o: { name?: string; team?: number; outer?: string[] } = {}): Buffer {
   const actor = `${cls}_7`;
+  const outer = o.outer ?? ['PersistentLevel', 'TheIsland'];
   return buildEmbedded([
     {
-      cls, names: [actor, 'PersistentLevel', 'TheIsland'], loc: [1, 2, 3],
+      cls, names: [actor, ...outer], loc: [1, 2, 3],
       props: [
         ...(o.name ? [str('TamedName', o.name)] : []),
         str('TamerString', 'Stamm'), byte('ColorSetIndices', 36), u32('DinoID1', id[0]), u32('DinoID2', id[1]),
@@ -47,7 +49,7 @@ function creature(cls: string, id: [number, number], o: { name?: string; team?: 
       extra: Buffer.from('0000000001000000', 'hex'),
     },
     {
-      cls: 'DinoCharacterStatusComponent_BP_C', names: ['DinoCharacterStatus_BP_C1', actor, 'PersistentLevel', 'TheIsland'],
+      cls: 'DinoCharacterStatusComponent_BP_C', names: ['DinoCharacterStatus_BP_C1', actor, ...outer],
       props: [
         float('MaxStatusValues', 2572.1), float('MaxStatusValues', 4520.5, 2), float('MaxStatusValues', 0.7221, 8),
         byte('NumberOfLevelUpPointsApplied', 6), int('BaseCharacterLevel', 22), u16('ExtraCharacterLevel', 42),
@@ -56,7 +58,7 @@ function creature(cls: string, id: [number, number], o: { name?: string; team?: 
       ],
       extra: Buffer.alloc(4),
     },
-    { cls: 'DinoTamedInventoryComponent_C', names: ['DinoTamedInventoryComponent_C_1', actor, 'PersistentLevel', 'TheIsland'], props: [], extra: Buffer.alloc(4) },
+    { cls: 'DinoTamedInventoryComponent_C', names: ['DinoTamedInventoryComponent_C_1', actor, ...outer], props: [], extra: Buffer.alloc(4) },
   ]);
 }
 
@@ -244,7 +246,7 @@ test('copy-item: soul with new ItemID, owner, SteamID and DinoIDs', () => {
   assert.throws(() => copyItem(null, entry, { steamId: '123' }), /not a SteamID64/);
 });
 
-test('creatures in a savegame: cryopods and souls, not creatures in the world', () => {
+test('creatures in a savegame: cryopods and souls, not wild creatures in the world', () => {
   const pod = creature('Rex_Character_BP_C', [31, 32], { name: 'Kryo' });
   const save = buildSave([
     {
@@ -269,6 +271,251 @@ test('creatures in a savegame: cryopods and souls, not creatures in the world', 
   assert.ok(found[0].data.equals(pod));
   const { tree } = addDino(null, found[0], {}, { randomId: () => [41, 42] });
   assert.deepEqual(readCluster(writeClusterTree(tree)).dinos[0].dinoId, [41, 42]);
+});
+
+// ---------------------------------------------------------------- creatures in the world of a save
+
+const MOSCHOPS = '/Game/PrimalEarth/Dinos/Moschops/Moschops_Character_BP.Moschops_Character_BP';
+const LEVEL = '/Game/Maps/Test/TestMap';
+const CHAIN = ['PersistentLevel', 'TestMap', LEVEL];
+const WORLD_REX: [number, number] = [1001, 2002];
+const refs = (name: string, list: number[]): Prop => ({
+  name, type: 'ArrayProperty', inner: 'ObjectProperty', value: (w) => { w.i32(list.length); for (const i of list) w.i32(0).i32(i); },
+});
+const TAIL = Buffer.from('0000000001000000', 'hex');
+
+/** A tamed creature standing in the world with its status component (and more objects after it). */
+function worldDino(cls: string, name: string, id: [number, number], at: number, more: Prop[] = [], o: { team?: number; guid?: Buffer } = {}): Obj[] {
+  return [
+    {
+      cls, names: [name], loc: [100, 200, 300], guid: o.guid,
+      props: [
+        u32('DinoID1', id[0]), u32('DinoID2', id[1]), int('TargetingTeam', o.team ?? 1_500_000_000), ref('MyCharacterStatusComponent', at + 1),
+        ...more,
+      ],
+      extra: TAIL,
+    },
+    { cls: 'DinoCharacterStatusComponent_BP_C', names: [`DinoCharacterStatus_BP_C_${at}`, name], props: [int('BaseCharacterLevel', 30)], extra: Buffer.alloc(4) },
+  ];
+}
+
+/**
+ * A save with a cryopod (class path and map package of a Rex), a tamed Rex in the world with
+ * inventory, item and painting component, a raptor whose path is only in the name table, a
+ * moschops without any path, a wild dodo and a dead tamed rex.
+ */
+function worldSave(o: { cryopod?: boolean; more?: Obj[] } = {}): Buffer {
+  const objects: Obj[] = [
+    {
+      cls: 'PrimalItem_WeaponEmptyCryopod_C', names: ['PrimalItem_WeaponEmptyCryopod_C_3'], isItem: true,
+      props: o.cryopod === false ? [] : [
+        structArray('CustomItemDatas', [[
+          { name: 'CustomDataName', type: 'NameProperty', value: (w) => w.name('Dino') },
+          paths('CustomDataClasses', [`BlueprintGeneratedClass ${REX}_C`]),
+          struct('CustomDataBytes', 'CustomItemByteArrays', [structArray('ByteArrays', [[
+            bytesArray('Bytes', creature('Rex_Character_BP_C', [31, 32], { outer: CHAIN })),
+          ]])]),
+        ]]),
+      ],
+    },
+    {
+      cls: 'Rex_Character_BP_C', names: ['Rex_Character_BP_C_12'], loc: [100, 200, 300], guid: Buffer.alloc(16, 7),
+      props: [
+        str('TamedName', 'Rexi'), str('TribeName', 'Stamm'), str('TamerString', 'Stamm'), u32('DinoID1', WORLD_REX[0]), u32('DinoID2', WORLD_REX[1]),
+        int('TargetingTeam', 1_500_000_000), ref('MyCharacterStatusComponent', 2), ref('MyInventoryComponent', 3), ref('PaintingComponent', 5),
+        ref('Instigator', 1), ref('TamedFollowTarget', 8), double('NextAllowedMatingTime', 5000), double('LastInAllyRangeTime', 1200),
+        bool('bEnableTamedMating', true),
+      ],
+      extra: TAIL,
+    },
+    { cls: 'DinoCharacterStatusComponent_BP_C', names: ['DinoCharacterStatus_BP_C_3', 'Rex_Character_BP_C_12'], props: [int('BaseCharacterLevel', 30), float('ExperiencePoints', 100)], extra: Buffer.alloc(4) },
+    {
+      cls: 'DinoTamedInventoryComponent_C', names: ['DinoTamedInventoryComponent_C_4', 'Rex_Character_BP_C_12'],
+      props: [refs('InventoryItems', [4]), bool('bInitializedMe', true), double('LastInventoryRefreshTime', 1100)], extra: Buffer.alloc(4),
+    },
+    { cls: 'PrimalItemConsumable_RawMeat_C', names: ['PrimalItemConsumable_RawMeat_C_9'], isItem: true, props: [ref('OwnerInventory', 3)], extra: Buffer.alloc(4) },
+    { cls: 'StructurePaintingComponent', names: ['StructurePaintingComponent_1', 'Rex_Character_BP_C_12'], props: [], extra: Buffer.alloc(4) },
+    ...worldDino('Raptor_Character_BP_C', 'Raptor_Character_BP_C_2', [41, 42], 6),
+    { cls: 'StorageBox_Huge_C', names: ['StorageBox_Huge_C_1'], loc: [0, 0, 0], props: [path('DinoClassToShow', `${RAPTOR}_C`)], extra: Buffer.alloc(4) },
+    ...worldDino('Moschops_Character_BP_C', 'Moschops_Character_BP_C_5', [51, 52], 9),
+    ...worldDino('Dodo_Character_BP_C', 'Dodo_Character_BP_C_1', [61, 62], 11, [], { team: 2000 }),
+    ...worldDino('Rex_Character_BP_C', 'Rex_Character_BP_C_99', [71, 72], 13, [bool('bIsDead', true)]),
+    ...(o.more ?? []),
+  ];
+  return buildSave(objects, { map: 'TestMap' });
+}
+
+test('creatures in the world: listed with class path, packed like the game packs them', () => {
+  const warnings: string[] = [];
+  const list = creaturesInSave(worldSave(), { warnings });
+  assert.deepEqual(list.map((s) => [s.kind, s.info.cls, s.blueprint, s.blueprintFrom]), [
+    ['cryopod', 'Rex_Character_BP_C', REX, 'own'],
+    ['world', 'Rex_Character_BP_C', REX, 'same-class'],
+    ['world', 'Raptor_Character_BP_C', RAPTOR, 'name-table'],
+    ['world', 'Moschops_Character_BP_C', null, null],
+  ]);
+  assert.deepEqual(warnings, ['1 dead tamed creatures in the world left out']);
+  const rex = list[1];
+  assert.equal(rex.where, 'Rex_Character_BP_C_12 (object 1)');
+  assert.deepEqual([rex.info.dinoId, rex.info.tamedName, rex.info.level, rex.info.team], [WORLD_REX, 'Rexi', 30, 1_500_000_000]);
+  assert.deepEqual(rex.world, {
+    index: 1, location: { x: 100, y: 200, z: 300 }, tribeName: 'Stamm',
+    droppedRefs: { InventoryItems: 1, TamedFollowTarget: 1 },
+    removedProps: [
+      'Instigator', 'LastInAllyRangeTime', 'NextAllowedMatingTime', 'PaintingComponent', 'TribeName', 'bEnableTamedMating',
+      'bInitializedMe', 'InventoryItems', 'LastInventoryRefreshTime',
+    ].sort(),
+    removedObjects: ['StructurePaintingComponent'],
+    level: CHAIN,
+  });
+  assert.equal(rex.problem, undefined);
+
+  // The archive: creature, status, inventory with the map's outer names, like a cryopod payload.
+  const t = readContainerTree(rex.data, { version: false });
+  assert.ok(writeContainerTree(t).equals(rex.data));
+  assert.deepEqual(t.objects.map((x) => x.names), [
+    ['Rex_Character_BP_C_12', ...CHAIN],
+    ['DinoCharacterStatus_BP_C_3', 'Rex_Character_BP_C_12', ...CHAIN],
+    ['DinoTamedInventoryComponent_C_4', 'Rex_Character_BP_C_12', ...CHAIN],
+  ]);
+  assert.ok(t.objects[0].guid.equals(Buffer.alloc(16)), 'the game writes a zero GUID');
+  assert.ok(t.objects[0].location && t.objects[0].hasLocation === 1);
+  assert.deepEqual(t.objects.map((x) => x.extra.toString('hex')), ['0000000001000000', '00000000', '00000000']);
+  const c = t.objects[0].props;
+  assert.deepEqual(c.map((p) => p.name), [
+    'TamedName', 'TamerString', 'DinoID1', 'DinoID2', 'TargetingTeam', 'MyCharacterStatusComponent', 'MyInventoryComponent', 'TamedFollowTarget',
+  ]);
+  assert.deepEqual(c.slice(5).map((p) => (p.value as { index: number }).index), [1, 2, -1], 'references renumbered, outside ones none');
+  assert.deepEqual(t.objects[1].props.map((p) => p.name), ['BaseCharacterLevel', 'ExperiencePoints']);
+  assert.deepEqual(t.objects[2].props, []);
+
+  // As an upload: new DinoIDs, listing fields from the archive, byte-exact on reading back.
+  const { tree, added } = addDino(null, rex, {}, { now: 1_900_000_000, randomId: () => [7, 8] });
+  assert.equal(added.blueprint, REX);
+  const file = writeClusterTree(tree);
+  assert.ok(writeClusterTree(readClusterTree(file)).equals(file));
+  const v = readCluster(file).dinos[0];
+  assert.deepEqual(v.dinoId, [7, 8]);
+  assert.equal(v.className, `Blueprint'${REX}'`);
+  assert.equal(v.name, 'Rexi - Lvl 30 (Rex)');
+  assert.equal(v.props.DinoNameInMap, 'Rex_Character_BP_C_12');
+  sameExcept(rex.data, findProperty(clusterEntries(readClusterTree(file), 'ArkTamedDinosData')[0], 'DinoData')!.value as Buffer, ['DinoID1', 'DinoID2']);
+
+  // Without a class path the blueprint must be given.
+  const moschops = list[3];
+  assert.throws(() => addDino(null, moschops), /class path of Moschops_Character_BP_C unknown/);
+  assert.equal(addDino(null, moschops, { blueprint: MOSCHOPS }).added.blueprint, MOSCHOPS);
+  assert.deepEqual(creaturesInSave(worldSave(), { world: false }).map((s) => s.kind), ['cryopod']);
+});
+
+test('creatures in the world: map package from the name table or --level, second entries once', () => {
+  // No cryopod of this map: the map package is unknown and copying is refused.
+  const warnings: string[] = [];
+  const bare = creaturesInSave(worldSave({ cryopod: false }), { warnings });
+  assert.ok(warnings.some((w) => /map package of TestMap unknown/.test(w)));
+  const rex = bare.find((s) => s.info.cls === 'Rex_Character_BP_C')!;
+  assert.equal(rex.world!.level, null);
+  assert.equal(rex.blueprint, null, 'no cryopod, no path');
+  assert.throws(() => addDino(null, rex, { blueprint: REX }), /map package unknown/);
+  const given = creaturesInSave(worldSave({ cryopod: false }), { level: LEVEL }).find((s) => s.info.cls === 'Rex_Character_BP_C')!;
+  assert.deepEqual(given.world!.level, CHAIN);
+  assert.equal(addDino(null, given, { blueprint: REX }).added.blueprint, REX);
+  assert.throws(() => creaturesInSave(worldSave(), { level: 'TestMap' }), /package path/);
+  // A name table entry "/Game/.../TestMap" is enough.
+  const level: Obj = { cls: 'LevelInfo_C', names: ['LevelInfo_C_1'], props: [path('Level', LEVEL)], extra: Buffer.alloc(4) };
+  const named = creaturesInSave(worldSave({ cryopod: false, more: [level] })).find((s) => s.kind === 'world')!;
+  assert.deepEqual(named.world!.level, CHAIN);
+  // The game writes some actors twice under the same name: listed once.
+  const twice = worldDino('Moschops_Character_BP_C', 'Moschops_Character_BP_C_5', [51, 52], 15);
+  const w2: string[] = [];
+  const list = creaturesInSave(worldSave({ more: twice }), { warnings: w2 });
+  assert.equal(list.filter((s) => s.info.cls === 'Moschops_Character_BP_C').length, 1);
+  assert.ok(w2.includes('1 second entries of the same creature left out (the game writes some actors twice)'));
+});
+
+test('class paths: name table entries and game files, ambiguous answers are not used', () => {
+  const names = classPathsInNames([
+    `${REX}_C`, `BlueprintGeneratedClass ${RAPTOR}_C`, `Blueprint'${MOSCHOPS}'`, '/Game/A/B.C', 'Rex_Character_BP_C', '/Game/Maps/Test/TestMap',
+  ]);
+  assert.deepEqual(Object.fromEntries([...names].map(([k, v]) => [k, [...v]])), {
+    Rex_Character_BP: [REX], Raptor_Character_BP: [RAPTOR], Moschops_Character_BP: [MOSCHOPS],
+  });
+
+  const dir = mkdtempSync(join(tmpdir(), 'ark-install-'));
+  try {
+    const content = join(dir, 'ShooterGame', 'Content');
+    const asset = (rel: string, body: string): void => {
+      mkdirSync(join(content, rel, '..'), { recursive: true });
+      writeFileSync(join(content, `${rel}.uasset`), body);
+    };
+    asset('PrimalEarth/Dinos/Moschops/Moschops_Character_BP', 'core asset');
+    asset('PrimalEarth/Dinos/Dodo/Dodo_Character_BP', 'core asset');
+    // A mod folder is named after the mod id; the package keeps the path the mod was made with,
+    // which is in the file's name map (next to the core class it derives from).
+    asset('Mods/555/Dinos/Dodo/Dodo_Character_BP', '\x1a\0/Game/Mods/BetterDodos/Dinos/Dodo/Dodo_Character_BP\0\x2f\0/Game/PrimalEarth/Dinos/Dodo/Dodo_Character_BP\0');
+    asset('Mods/555/Dinos/Moa/Moa_Character_BP_2', '/Game/Mods/BetterDodos/Dinos/Moa/Moa_Character_BP\0');
+    asset('Mods/555/Unreadable_Character_BP', 'no path in here');
+    const install = new InstallDir(dir);
+    assert.equal(new InstallDir(content).content, content);
+    assert.equal(new InstallDir(join(dir, 'ShooterGame')).content, content);
+    assert.throws(() => new InstallDir(join(content, 'PrimalEarth')), /no ShooterGame\/Content/);
+    assert.deepEqual(install.lookup('Moschops_Character_BP_C').paths, [MOSCHOPS]);
+    assert.deepEqual(install.lookup('Dodo_Character_BP_C').paths.sort(), [
+      '/Game/Mods/BetterDodos/Dinos/Dodo/Dodo_Character_BP.Dodo_Character_BP', '/Game/PrimalEarth/Dinos/Dodo/Dodo_Character_BP.Dodo_Character_BP',
+    ]);
+    assert.deepEqual(install.lookup('Moa_Character_BP_2_C').paths, ['/Game/Mods/BetterDodos/Dinos/Moa/Moa_Character_BP_2.Moa_Character_BP_2']);
+    assert.deepEqual(install.lookup('Unreadable_Character_BP_C').paths, []);
+    assert.equal(install.lookup('Unreadable_Character_BP_C').unreadable.length, 1);
+
+    // In a save: the moschops gets its path from the game files; a tamed dodo has two answers and none is used.
+    const dodo = worldDino('Dodo_Character_BP_C', 'Dodo_Character_BP_C_3', [81, 82], 15);
+    const list = creaturesInSave(worldSave({ more: dodo }), { installDir: dir });
+    const m = list.find((s) => s.info.cls === 'Moschops_Character_BP_C')!;
+    assert.deepEqual([m.blueprint, m.blueprintFrom], [MOSCHOPS, 'install-dir']);
+    const d = list.find((s) => s.info.cls === 'Dodo_Character_BP_C')!;
+    assert.deepEqual([d.blueprint, d.blueprintFrom, d.blueprintCandidates?.length], [null, null, 2]);
+    assert.throws(() => addDino(null, d), /class path of Dodo_Character_BP_C unknown/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cluster CLI: a creature from the world of a save into the uploads', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ark-world-'));
+  try {
+    const save = join(dir, 'TestMap.ark');
+    const target = join(dir, PLAYER);
+    writeFileSync(save, worldSave());
+    writeFileSync(target, '');
+    const run = (...args: string[]) => spawnSync(process.execPath, [CLI, 'cluster', ...args], { encoding: 'utf8' });
+    const list = run('dinos', save);
+    assert.equal(list.status, 0, list.stderr);
+    const res = JSON.parse(list.stdout);
+    assert.deepEqual(res.warnings, ['1 dead tamed creatures in the world left out']);
+    const rex = res.creatures.find((c: { kind: string; cls: string }) => c.kind === 'world' && c.cls === 'Rex_Character_BP_C');
+    assert.deepEqual([rex.blueprint, rex.blueprintFrom, rex.level, rex.droppedRefs], [REX, 'same-class', LEVEL, { InventoryItems: 1, TamedFollowTarget: 1 }]);
+    assert.deepEqual(rex.location, { x: 100, y: 200, z: 300 });
+
+    const out = join(dir, 'out');
+    const r = run('add-dino', target, '--from', save, '--source-id', WORLD_REX.join(':'), '--out', out);
+    assert.equal(r.status, 0, r.stderr);
+    const added = JSON.parse(r.stdout);
+    assert.equal(added.source.kind, 'world');
+    assert.equal(added.source.blueprintFrom, 'same-class');
+    const v = readCluster(readFileSync(out)).dinos[0];
+    assert.notDeepEqual(v.dinoId, WORLD_REX, 'new DinoIDs');
+    assert.equal(v.name, 'Rexi - Lvl 30 (Rex)');
+
+    const moschops = String(res.creatures.find((c: { cls: string }) => c.cls === 'Moschops_Character_BP_C').dinoId.join(':'));
+    const no = run('add-dino', target, '--from', save, '--source-id', moschops, '--out', join(dir, 'm'));
+    assert.notEqual(no.status, 0);
+    assert.match(no.stderr, /class path of Moschops_Character_BP_C unknown/);
+    const yes = run('add-dino', target, '--from', save, '--source-id', moschops, '--blueprint', MOSCHOPS, '--out', join(dir, 'm'));
+    assert.equal(yes.status, 0, yes.stderr);
+    assert.equal(JSON.parse(yes.stdout).source.blueprintFrom, 'option');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('creature blueprint spellings and stat texts', () => {

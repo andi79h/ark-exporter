@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { chownSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { InstallDir } from './class-paths.ts';
 import { addItem, clusterEntries, type NewItem, readCluster, readClusterTree, writeClusterTree } from './cluster.ts';
 import { addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource } from './cluster-dinos.ts';
 import { readContainerTree, type TreeNotes, writeContainerTree } from './tree.ts';
@@ -12,8 +13,10 @@ export const CLUSTER_USAGE = `Cluster files (clusters/<ClusterId>/<SteamID>):
   ark-export cluster check <file | dir>...          read and write back every file, report differences (reads only)
   ark-export cluster add-item <file> --blueprint BP (--out FILE | --in-place --backup DIR) [options]
                                                      append an item; writes a new file or replaces the file atomically
-  ark-export cluster dinos <file>...                creatures that add-dino can copy: uploads, souls and cryopods in
-                                                     cluster files, souls and cryopods in savegames (.ark)
+  ark-export cluster dinos <file>... [--install-dir DIR] [--level PATH]
+                                                     creatures that add-dino can copy: uploads, souls and cryopods in
+                                                     cluster files; souls, cryopods, vivariums and tamed creatures
+                                                     in the world of savegames (.ark)
   ark-export cluster add-dino <file> --from FILE (--pick N | --source-id A:B) (--out FILE | --in-place --backup DIR) [options]
                                                      add a creature to the uploads (new DinoIDs, upload time now)
   ark-export cluster copy-item <file> --from FILE --index N (--out FILE | --in-place --backup DIR) [options]
@@ -39,6 +42,12 @@ add-item options:
   --item-id A:B         ItemID1:ItemID2, default random and unique within the file
   --out FILE            write the result to FILE (--force overwrites it)
   --in-place            replace <file>; needs --backup DIR for a copy of the original
+
+dinos and add-dino options:
+  --install-dir DIR     game or server installation (holding ShooterGame/): class paths that the save
+                        does not hold are looked up in ShooterGame/Content (one match only)
+  --level PATH          map package for creatures from the world, e.g. /Game/Maps/TheIslandSubMaps/TheIsland;
+                        default: from souls and cryopods of the same map in the save
 
 add-dino options:
   --from FILE           cluster file or savegame (.ark) holding the creature
@@ -258,22 +267,40 @@ const pair = (s: string, what: string): [number, number] => {
 
 const isSave = (file: string, buf: Buffer): boolean => file.endsWith('.ark') || (buf.length > 2 && buf.readInt16LE(0) >= 5 && buf.readInt16LE(0) <= 11 && buf.readInt32LE(0) !== 4);
 
-function creaturesIn(file: string): CreatureSource[] {
+interface SourceOptions { installDir?: InstallDir; level?: string; }
+
+function creaturesIn(file: string, o: SourceOptions = {}, warnings: string[] = []): CreatureSource[] {
   const buf = readFileSync(file);
-  return isSave(file, buf) ? creaturesInSave(buf) : creaturesInCluster(readClusterTree(buf));
+  return isSave(file, buf)
+    ? creaturesInSave(buf, { installDir: o.installDir, level: o.level, warnings })
+    : creaturesInCluster(readClusterTree(buf), { installDir: o.installDir });
 }
 
-function dinosCommand(files: string[]): number {
-  const out = files.map((f) => {
+const SOURCE_OPTIONS = { 'install-dir': { type: 'string' }, level: { type: 'string' } } as const;
+const sourceOptions = (v: { 'install-dir'?: string; level?: string }): SourceOptions => ({
+  installDir: v['install-dir'] === undefined ? undefined : new InstallDir(resolve(v['install-dir'])), level: v.level,
+});
+
+function dinosCommand(args: string[]): number {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: SOURCE_OPTIONS });
+  if (!positionals.length) throw new Error('dinos needs files');
+  const opts = sourceOptions(values);
+  const out = positionals.map((f) => {
     const file = resolve(f);
-    return {
-      file,
-      creatures: creaturesIn(file).map((s, pick) => ({
-        pick, where: s.where, kind: s.kind, ...s.info, blueprint: s.blueprint, species: s.species, bytes: s.data.length,
-      })),
-    };
+    const warnings: string[] = [];
+    const creatures = creaturesIn(file, opts, warnings).map((s, pick) => ({
+      pick, where: s.where, kind: s.kind, ...s.info, blueprint: s.blueprint, blueprintFrom: s.blueprintFrom ?? null,
+      ...(s.blueprintCandidates ? { blueprintCandidates: s.blueprintCandidates } : {}),
+      species: s.species, bytes: s.data.length,
+      ...(s.world ? {
+        location: s.world.location, tribeName: s.world.tribeName, droppedRefs: s.world.droppedRefs,
+        removedProps: s.world.removedProps, removedObjects: s.world.removedObjects, level: s.world.level?.[2] ?? null,
+      } : {}),
+      ...(s.problem ? { problem: s.problem } : {}),
+    }));
+    return { file, creatures, warnings };
   });
-  print(files.length === 1 ? out[0] : out);
+  print(positionals.length === 1 ? out[0] : out);
   return 0;
 }
 
@@ -284,7 +311,7 @@ function addDinoCommand(args: string[]): number {
     options: {
       from: { type: 'string' }, pick: { type: 'string' }, 'source-id': { type: 'string' }, name: { type: 'string' },
       'keep-id': { type: 'boolean', default: false }, 'dino-id': { type: 'string' }, blueprint: { type: 'string' },
-      species: { type: 'string' }, 'upload-time': { type: 'string' }, ...OUTPUT_OPTIONS,
+      species: { type: 'string' }, 'upload-time': { type: 'string' }, ...SOURCE_OPTIONS, ...OUTPUT_OPTIONS,
     },
   });
   if (positionals.length !== 1) throw new Error('add-dino needs exactly one cluster file');
@@ -292,7 +319,7 @@ function addDinoCommand(args: string[]): number {
   if ((values.pick === undefined) === (values['source-id'] === undefined)) throw new Error('give either --pick N or --source-id A:B');
   checkOutput(values);
   const src = resolve(positionals[0]);
-  const sources = creaturesIn(resolve(values.from));
+  const sources = creaturesIn(resolve(values.from), sourceOptions(values));
   let source: CreatureSource | undefined;
   if (values.pick !== undefined) {
     source = sources[number(values.pick, 'pick')!];
@@ -322,7 +349,12 @@ function addDinoCommand(args: string[]): number {
   const { target, backup } = commit(src, before, after, values);
   const warnings = added.dinos > 20 ? [`${added.dinos} uploaded creatures in the file; MaxTributeDinos is 20 unless raised`] : [];
   print({
-    file: target, backup, source: { file: resolve(values.from), where: source.where, kind: source.kind, dinoId: source.info.dinoId },
+    file: target, backup,
+    source: {
+      file: resolve(values.from), where: source.where, kind: source.kind, dinoId: source.info.dinoId,
+      blueprintFrom: values.blueprint ? 'option' : source.blueprintFrom ?? null,
+      ...(source.world ? { droppedRefs: source.world.droppedRefs, removedProps: source.world.removedProps } : {}),
+    },
     before: { bytes: before.length, sha256: sha256(before), dinos: dinosBefore },
     after: { bytes: after.length, sha256: sha256(after), dinos: check.dinos.length },
     added: { ...added, uploaded: iso(added.uploadTime) }, warnings,
@@ -464,7 +496,6 @@ export async function clusterCommand(argv: string[]): Promise<number> {
     case 'add-item':
       return addItemCommand(args);
     case 'dinos':
-      if (!args.length) throw new Error('dinos needs files');
       return dinosCommand(args);
     case 'add-dino':
       return addDinoCommand(args);
