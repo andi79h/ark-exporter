@@ -240,7 +240,8 @@ Wichtige Felder in `ItemNetInfo`:
 - `ItemArchetype`: Klasse als `BlueprintGeneratedClass /Game/…/X.X_C`.
 - `ItemId`: `ItemID1`, `ItemID2` (je UInt32). In allen untersuchten Dateien kleiner als 10⁹; das Spiel erzeugt sie offenbar als Zufalls-Float × 10⁹.
 - `ItemStatValues[0..7]` (UInt16): allgemeine Qualität, Rüstung, Haltbarkeit (Maximum), Schaden, Munition, Kälteschutz, Gewicht, Hitzeschutz. Die Werte im Spiel ergeben sich daraus mit den Faktoren der jeweiligen Item-Klasse.
-- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen), `ItemRating` (Float), `ItemDurability` (Float, aktuelle Haltbarkeit), `ItemQuantity` (UInt32).
+- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen), `ItemRating` (Float), `ItemDurability` (Float, aktuelle Haltbarkeit).
+- `ItemQuantity` (UInt32): **Anzahl − 1.** Einzelne Items und Blaupausen haben 0, ein voller 100er-Stapel hat 99, ein voller 50er-Stapel 49. Im Spieltest am 20.11.2026 kamen bei `ItemQuantity` 100 genau 101 Stück an. `cluster show` meldet deshalb `quantity` (Anzahl, also `ItemQuantity` + 1) und daneben `quantityRaw` (gespeicherter Wert).
 - `ExpirationTimeUTC` (UInt32, Unix-Sekunden). In allen untersuchten Dateien genau `UploadTime + 86400`.
 - `OwnerPlayerDataID` (UInt64): die `PlayerDataID` des Spielers, der hochgeladen hat.
 
@@ -261,7 +262,7 @@ bin/ark-export cluster add-item 7656119xxxxxxxxxx \
   --custom-name "Treuebonus" --out /tmp/neu
 ```
 
-- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. `OwnerPlayerDataID` kommt aus dem hochgeladenen Charakter oder den vorhandenen Items. Ohne Angabe gilt: Menge 1, Ablauf nach 86 400 s. Leere Dateien bekommen die vollständige Struktur.
+- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. `OwnerPlayerDataID` kommt aus dem hochgeladenen Charakter oder den vorhandenen Items. `--quantity` ist die Anzahl im Spiel (mindestens 1); geschrieben wird `ItemQuantity` = Anzahl − 1, also `--quantity 100` → 99. Ohne Angabe gilt: 1 Stück, Ablauf nach 86 400 s. Leere Dateien bekommen die vollständige Struktur.
 - **Prüfung:** Vor dem Schreiben wird das Ergebnis neu gelesen. Danach muss es ein Item mehr haben und sich selbst byte-genau zurückschreiben lassen. Lässt sich schon die Eingabe nicht byte-genau zurückschreiben, bricht der Befehl ab.
 - **`--in-place`:** Sichert das Original zuerst nach `--backup`. Dann schreibt der Befehl eine temporäre Datei daneben und ersetzt die Datei per `rename`. Rechte, Besitzer und Gruppe bleiben erhalten. Hat jemand die Datei seit dem Lesen geändert, etwa der Spielserver, wird nichts ersetzt.
 - **Noch ungeklärt:** Ob der Server eingeschleuste Items so annimmt, ist im Spiel noch nicht getestet. Ebenso offen ist, ob er `ExpirationTimeUTC` oder `TributeItemExpirationSeconds` ab `UploadTime` beachtet und was bei sehr hohen Werten passiert. Siehe [Offen](#offen).
@@ -348,7 +349,7 @@ Aufbau:
 - Cluster-Dateien, nur im Spiel auf einem Testcluster zu klären:
   - Wird ein angehängtes Item am Obelisken angezeigt und lässt es sich herunterladen?
   - Welche Zeit zählt beim Ablauf: `ExpirationTimeUTC` oder `UploadTime` + `TributeItemExpirationSeconds`? Und was bewirken 0 oder 4294967295?
-  - Bedeutet `ItemQuantity` 1 ein Stück? Hochgeladene Blaupausen haben 0 und zusätzlich alle `bIsEngram`. `--blueprint-copy` setzt dagegen nur `bIsBlueprint`, wie bei einer Blaupause aus einer Kiste.
+  - Hochgeladene Blaupausen haben zusätzlich alle `bIsEngram`. `--blueprint-copy` setzt dagegen nur `bIsBlueprint`, wie bei einer Blaupause aus einer Kiste. Reicht das? (Geklärt ist `ItemQuantity`: Anzahl − 1, siehe oben.)
   - Wird `ItemDurability` auf das Maximum aus `ItemStatValues[2]` begrenzt, wird `ItemRating` neu berechnet, und was gilt für sehr hohe Werte (65535)?
   - Spielt `OwnerPlayerDataID` beim Herunterladen eine Rolle?
   - Wann liest und schreibt der Server die Datei? Kann er eine gerade eingespielte Änderung mit einem älteren Stand überschreiben, etwa wenn der Spieler gleichzeitig hochlädt?
