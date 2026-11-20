@@ -29,7 +29,7 @@ add-item options:
   --quality N           ItemQualityIndex 0-5 (primitive ... ascendant), default 0
   --rating R            ItemRating, default 0
   --durability D        ItemDurability (current durability), default 0
-  --quantity N          ItemQuantity, default 1
+  --quantity N          number of pieces, default 1 (written as ItemQuantity N-1, as the game does)
   --colors A,B,...      ItemColorID 0..5
   --blueprint-copy      upload as blueprint
   --custom-name S, --custom-description S, --crafter S, --tribe S, --ammo N
