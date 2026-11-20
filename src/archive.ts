@@ -1,5 +1,6 @@
 // Little-endian binary reader for ARK: Survival Evolved archives (.ark, .arkprofile, .arktribe,
 // and the archives embedded in cryopods).
+import type { NameTable } from './nametable.ts';
 
 /** Shortest decimal that converts back to exactly the same float32. Keeps the JSON small and lossless. */
 export function float32(v: number): number | string {
@@ -23,12 +24,21 @@ export class Archive {
   pos: number;
   /** Name table of a .ark file. null means names are stored inline as strings (profiles, tribes, cryopods). */
   names: string[] | null;
+  /** Set by the save editor: records how names were stored so they can be written back the same way. */
+  table: NameTable | null = null;
 
   constructor(buf: Buffer, names: string[] | null = null, pos = 0) {
     this.buf = buf;
     this.dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     this.names = names;
     this.pos = pos;
+  }
+
+  /** Reader for a .ark name table that also feeds the table's write-back encodings. */
+  static withTable(buf: Buffer, table: NameTable, pos = 0): Archive {
+    const a = new Archive(buf, table.names, pos);
+    a.table = table;
+    return a;
   }
 
   get length(): number { return this.buf.length; }
@@ -92,6 +102,8 @@ export class Archive {
     this.pos += 8;
     const s = this.names[idx - 1];
     if (s === undefined) throw new RangeError(`name index ${idx} outside name table at ${this.pos - 8}`);
-    return inst ? `${s}_${inst - 1}` : s;
+    const rendered = inst ? `${s}_${inst - 1}` : s;
+    if (this.table) this.table.observe(rendered, idx, inst);
+    return rendered;
   }
 }

@@ -1,4 +1,6 @@
-// Lossless property trees for inline-named archives (cluster files, profiles, tribes, cryopod contents).
+// Lossless property trees for inline-named archives (cluster files, profiles, tribes, cryopod contents)
+// and for the property lists of .ark files (names from a name table: pass a reader made with
+// Archive.withTable and a BinaryWriter with the same NameTable).
 //
 // properties.ts turns property lists into plain values for the export and drops what the export does
 // not need: types, array indices, string encodings, sizes. Writing a file back needs all of it, so this
@@ -9,6 +11,7 @@
 // - Parts that cannot be decoded (unknown property types, unreadable structs) stay opaque bytes.
 // The grammar is the same as in properties.ts; see there for the layout of a property.
 import { Archive, float32, float64 } from './archive.ts';
+import type { NameTable } from './nametable.ts';
 import { nativeArrayStruct } from './properties.ts';
 import { Blob, type GameObject, ObjectRef, PathRef, type Props, type ReadContext, type Value } from './types.ts';
 import { BinaryWriter } from './writer.ts';
@@ -111,7 +114,8 @@ function readArray(a: Archive, p: Property, size: number, notes: TreeNotes | und
     case 'FloatProperty': each(() => a.f32raw()); break;
     case 'DoubleProperty': each(() => a.f64raw()); break;
     case 'BoolProperty': each(() => a.u8() !== 0); break;
-    case 'StrProperty': case 'NameProperty': each(() => a.string()); break;
+    case 'StrProperty': each(() => a.string()); break;
+    case 'NameProperty': each(() => a.name()); break; // inline archives: the same as a string
     case 'ObjectProperty': each(() => readObject(a, 8)); break;
     default: throw new RangeError(`unknown array element type ${p.inner}`);
   }
@@ -129,7 +133,8 @@ function readValue(a: Archive, p: Property, size: number, notes: TreeNotes | und
     case 'UInt64Property': p.value = a.u64n(); return;
     case 'FloatProperty': p.value = a.f32raw(); return;
     case 'DoubleProperty': p.value = a.f64raw(); return;
-    case 'StrProperty': case 'NameProperty': p.value = a.string(); return;
+    case 'StrProperty': p.value = a.string(); return;
+    case 'NameProperty': p.value = a.name(); return;
     case 'ObjectProperty': p.value = readObject(a, size); return;
     case 'ByteProperty': p.value = p.inner === 'None' ? a.u8() : a.name(); return;
     case 'StructProperty':
@@ -177,7 +182,7 @@ function readProperty(a: Archive, name: string, notes: TreeNotes | undefined): P
   }
   if (isLeaf(p)) {
     const original = a.buf.subarray(start, end);
-    if (!encodeBody(p).equals(original)) {
+    if (!encodeBody(p, a.table).equals(original)) {
       p.raw = original;
       p.rawValue = cloneValue(p.value);
       note(notes, `kept original bytes of ${type}${p.inner ? `<${p.inner}>` : ''}`);
@@ -248,7 +253,8 @@ function writeElement(w: BinaryWriter, t: string | null | undefined, v: TreeValu
     case 'FloatProperty': w.f32(num(v, what)); return;
     case 'DoubleProperty': w.f64(num(v, what)); return;
     case 'BoolProperty': w.u8(v ? 1 : 0); return;
-    case 'StrProperty': case 'NameProperty': w.string(str(v, what)); return;
+    case 'StrProperty': w.string(str(v, what)); return;
+    case 'NameProperty': w.name(str(v, what)); return;
     case 'ObjectProperty': writeObject(w, v, what); return;
   }
   throw new TypeError(`${what}: cannot write ${t}`);
@@ -303,8 +309,8 @@ function writeBody(w: BinaryWriter, p: Property): void {
   }
 }
 
-function encodeBody(p: Property): Buffer {
-  const w = new BinaryWriter(64);
+function encodeBody(p: Property, names: NameTable | null): Buffer {
+  const w = new BinaryWriter(64, names);
   writeValue(w, p);
   return w.toBuffer();
 }
@@ -370,6 +376,80 @@ export function cloneProperty(p: Property): Property {
 
 export function findProperty(list: Property[], name: string, index = 0): Property | undefined {
   return list.find((p) => p.name === name && p.index === index);
+}
+
+// ---------------------------------------------------------------- object references
+
+/** Where an index reference sits: the property (and array position) holding it. */
+export interface RefSite {
+  /** Property path from the list given, e.g. ["MyData", "Items"]. */
+  path: string[];
+  property: Property;
+  /** Position in an ObjectProperty array, -1 for a single reference. */
+  element: number;
+  index: number;
+}
+
+function isIndexRef(v: TreeValue): v is { index: number; short?: true } {
+  return v !== null && typeof v === 'object' && !Buffer.isBuffer(v) && !Array.isArray(v) && 'index' in v && typeof (v as { index: unknown }).index === 'number';
+}
+
+/**
+ * Calls fn for every object-table reference in a property list, nested structs and struct arrays
+ * included. Byte arrays (cryopod contents) are not entered: their indices point into their own table.
+ */
+export function forEachRef(list: Property[], fn: (site: RefSite) => void, path: string[] = []): void {
+  for (const p of list) {
+    if (p.opaque) continue;
+    const here = [...path, p.name];
+    if (p.type === 'ObjectProperty') {
+      if (isIndexRef(p.value)) fn({ path: here, property: p, element: -1, index: p.value.index });
+    } else if (p.type === 'StructProperty') {
+      if (!isNativeStruct(p.inner) && Array.isArray(p.value)) forEachRef(p.value as Property[], fn, here);
+    } else if (p.type === 'ArrayProperty' && Array.isArray(p.value)) {
+      const items = p.value as TreeValue[];
+      if (p.inner === 'ObjectProperty') {
+        items.forEach((e, i) => { if (isIndexRef(e)) fn({ path: here, property: p, element: i, index: e.index }); });
+      } else if (p.inner === 'StructProperty' && !p.elementStruct) {
+        for (const e of items) forEachRef(e as Property[], fn, here);
+      }
+    }
+  }
+}
+
+/**
+ * Rewrites every object-table reference: map returns the new index (-1 = none). With dropFromArrays,
+ * array elements that map to -1 are removed instead of being set to -1.
+ */
+export function remapRefs(list: Property[], map: (index: number) => number, dropFromArrays = false): boolean {
+  let changed = false;
+  for (const p of list) {
+    if (p.opaque) continue;
+    if (p.type === 'ObjectProperty') {
+      if (isIndexRef(p.value) && p.value.index !== -1) {
+        const n = map(p.value.index);
+        if (n !== p.value.index) { p.value = { ...p.value, index: n }; changed = true; }
+      }
+    } else if (p.type === 'StructProperty') {
+      if (!isNativeStruct(p.inner) && Array.isArray(p.value)) changed = remapRefs(p.value as Property[], map, dropFromArrays) || changed;
+    } else if (p.type === 'ArrayProperty' && Array.isArray(p.value)) {
+      const items = p.value as TreeValue[];
+      if (p.inner === 'ObjectProperty') {
+        const out: TreeValue[] = [];
+        for (const e of items) {
+          if (!isIndexRef(e) || e.index === -1) { out.push(e); continue; }
+          const n = map(e.index);
+          if (n !== e.index) changed = true;
+          if (n === -1 && dropFromArrays) continue;
+          out.push(n === e.index ? e : { ...e, index: n });
+        }
+        p.value = out;
+      } else if (p.inner === 'StructProperty' && !p.elementStruct) {
+        for (const e of items) changed = remapRefs(e as Property[], map, dropFromArrays) || changed;
+      }
+    }
+  }
+  return changed;
 }
 
 // ---------------------------------------------------------------- export value model
