@@ -2,11 +2,9 @@
 // - unchanged write (copy path), forced reference patching, complete re-encoding of every object,
 // - per object: header and property list re-encoded, reference scanner agrees with the tree,
 // - embedded archives in byte arrays (cryopods, soul traps) and serialized property lists re-encoded.
-import { Archive } from './archive.ts';
 import { SaveEditor } from './editor.ts';
-import {
-  forEachRef, type Property, readContainerTree, readPropertyList, type TreeNotes, writeContainerTree, writePropertyList,
-} from './tree.ts';
+import { decodeBlob, encodeBlob } from './embedded.ts';
+import { forEachRef, type Property, type TreeNotes, writePropertyList } from './tree.ts';
 import { BinaryWriter } from './writer.ts';
 
 export interface VerifyReport {
@@ -57,38 +55,20 @@ function checkBytes(list: Property[], stats: Embedded, problems: string[], where
 }
 
 function checkBlob(bytes: Buffer, stats: Embedded, problems: string[], where: string): void {
-  if (bytes.length >= 40) {
-    const count = bytes.readInt32LE(0);
-    if (count > 0 && count <= 10_000) {
-      try {
-        const c = readContainerTree(bytes, { version: false });
-        stats.archives++;
-        if (writeContainerTree(c).equals(bytes)) stats.archivesIdentical++;
-        else if (problems.length < 20) problems.push(`embedded archive differs in ${where}`);
-        for (const o of c.objects) checkBytes(o.props, stats, problems, `${where}/${o.cls}`);
-        return;
-      } catch { /* not an archive */ }
-    }
+  const d = decodeBlob(bytes);
+  if (d === null) { stats.raw++; return; }
+  const same = encodeBlob(d).equals(bytes);
+  if (d.kind === 'archive') {
+    stats.archives++;
+    if (same) stats.archivesIdentical++;
+    else if (problems.length < 20) problems.push(`embedded archive differs in ${where}`);
+    for (const o of d.tree.objects) checkBytes(o.props, stats, problems, `${where}/${o.cls}`);
+    return;
   }
-  if (bytes.length >= 16) {
-    const first = bytes.readInt32LE(0);
-    if (first > 1 && first <= 256) {
-      try {
-        const a = new Archive(bytes, null);
-        const list = readPropertyList(a);
-        if (a.pos === bytes.length) {
-          stats.propertyLists++;
-          const w = new BinaryWriter(bytes.length + 64);
-          writePropertyList(w, list);
-          if (w.toBuffer().equals(bytes)) stats.propertyListsIdentical++;
-          else if (problems.length < 20) problems.push(`serialized property list differs in ${where}`);
-          checkBytes(list, stats, problems, where);
-          return;
-        }
-      } catch { /* not a property list */ }
-    }
-  }
-  stats.raw++;
+  stats.propertyLists++;
+  if (same) stats.propertyListsIdentical++;
+  else if (problems.length < 20) problems.push(`serialized property list differs in ${where}`);
+  checkBytes(d.list, stats, problems, where);
 }
 
 export function verifySave(buf: Buffer, opts: { reencodeAll?: boolean } = {}): VerifyReport {

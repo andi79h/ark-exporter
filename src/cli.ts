@@ -276,6 +276,8 @@ async function main(argv: string[]): Promise<number> {
 }
 
 main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e: Error) => {
-  process.stderr.write(`ark-export: ${e.message}\n`);
+  // Programs calling the CLI (the web interface) can ask for errors as JSON.
+  if (process.env.ARK_EXPORT_ERRORS === 'json') process.stderr.write(`${JSON.stringify({ error: e.message })}\n`);
+  else process.stderr.write(`ark-export: ${e.message}\n`);
   process.exitCode = 1;
 });
