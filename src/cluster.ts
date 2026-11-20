@@ -72,7 +72,10 @@ export interface ClusterItem {
   /** ItemArchetype, e.g. "BlueprintGeneratedClass /Game/.../PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt_C". */
   blueprint: string | null;
   itemId: [number, number];
+  /** Number of pieces: ItemQuantity + 1 (see quantityRaw), null without ItemQuantity. */
   quantity: Value;
+  /** ItemQuantity as stored: pieces - 1. Single items and blueprints 0, a full stack of 100 is 99. */
+  quantityRaw: Value;
   quality: Value;
   rating: Value;
   durability: Value;
@@ -148,7 +151,8 @@ function itemView(entry: Property[], index: number, ctx: ReadContext): ClusterIt
     index,
     blueprint: pathOf(info.ItemArchetype),
     itemId: [Number(id.ItemID1), Number(id.ItemID2)],
-    quantity: info.ItemQuantity ?? null,
+    quantity: typeof info.ItemQuantity === 'number' ? info.ItemQuantity + 1 : null,
+    quantityRaw: info.ItemQuantity ?? null,
     quality: info.ItemQualityIndex ?? null,
     rating: info.ItemRating ?? null,
     durability: info.ItemDurability ?? null,
@@ -219,7 +223,11 @@ export function readCluster(buf: Buffer, ctx = new ReadContext()): Cluster {
 export interface NewItem {
   /** Item class: "/Game/.../PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt_C", a Blueprint'...' path or the full ItemArchetype. */
   blueprint: string;
-  /** ItemQuantity (UInt32). Default 1. Uploaded blueprints in the files seen store 0. */
+  /**
+   * Number of pieces, 1 or more. Default 1. Written as ItemQuantity = pieces - 1: in real files full
+   * stacks of 100 store 99, of 50 store 49, single items and blueprints 0; ItemQuantity 100 gave
+   * 101 pieces in the game.
+   */
   quantity?: number;
   /** ItemQualityIndex 0..5 (primitive ... ascendant). Default 0. */
   quality?: number;
@@ -255,6 +263,9 @@ export interface AddedItem {
   index: number;
   itemId: [number, number];
   blueprint: string;
+  /** Pieces, and ItemQuantity as written (pieces - 1). */
+  quantity: number;
+  quantityRaw: number;
   uploadTime: number;
   expiration: number;
   owner: string;
@@ -334,17 +345,17 @@ const pad = (values: number[] | undefined, n: number): number[] => Array.from({ 
 
 /**
  * One ArkItems entry: ItemNetInfo with the 95 fields in the order the game (2023+) writes them,
- * then Version 2.0 and UploadTime.
+ * then Version 2.0 and UploadTime. quantityRaw is ItemQuantity as stored (pieces - 1).
  */
 export function tributeItemEntry(f: {
-  archetype: string; itemId: [number, number]; quantity: number; quality: number; rating: number; durability: number;
+  archetype: string; itemId: [number, number]; quantityRaw: number; quality: number; rating: number; durability: number;
   stats: number[]; colors: number[]; isBlueprint: boolean; customName: string | null; customDescription: string | null;
   crafterName: string | null; crafterTribe: string | null; ammo: number; owner: bigint; uploadTime: number; expiration: number;
 }): Property[] {
   const info: Property[] = [
     p('ItemArchetype', 'ObjectProperty', { path: f.archetype }),
     p('ItemId', 'StructProperty', [p('ItemID1', 'UInt32Property', f.itemId[0]), p('ItemID2', 'UInt32Property', f.itemId[1])], { inner: 'ItemNetID' }),
-    p('ItemQuantity', 'UInt32Property', f.quantity),
+    p('ItemQuantity', 'UInt32Property', f.quantityRaw),
     p('CustomItemID', 'IntProperty', 0),
     p('SlotIndex', 'IntProperty', 0),
     p('CreationTime', 'DoubleProperty', 0),
@@ -440,9 +451,10 @@ export function addItem(
       if (++tries > 100) throw new Error('no free item id found');
     } while (taken.has(`${itemId[0]}:${itemId[1]}`));
   }
+  const quantity = checkInt(item.quantity ?? 1, 1, 2 ** 32, 'quantity');
   const entry = tributeItemEntry({
     archetype, itemId, uploadTime, expiration, owner,
-    quantity: checkInt(item.quantity ?? 1, 0, 2 ** 32 - 1, 'quantity'),
+    quantityRaw: quantity - 1,
     quality: checkInt(item.quality ?? 0, 0, 255, 'quality'),
     rating: checkFloat(item.rating ?? 0, 'rating'),
     durability: checkFloat(item.durability ?? 0, 'durability'),
@@ -461,6 +473,9 @@ export function addItem(
   list.push(entry);
   return {
     tree,
-    added: { index: list.length - 1, itemId, blueprint: archetype, uploadTime, expiration, owner: owner.toString() },
+    added: {
+      index: list.length - 1, itemId, blueprint: archetype, quantity, quantityRaw: quantity - 1, uploadTime, expiration,
+      owner: owner.toString(),
+    },
   };
 }

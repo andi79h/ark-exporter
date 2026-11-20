@@ -34,13 +34,16 @@ const wideAscii = (name: string, s: string): Prop => ({
   name, type: 'StrProperty', value: (w) => w.i32(-(s.length + 1)).bytes(Buffer.concat([Buffer.from(s, 'utf16le'), Buffer.alloc(2)])),
 });
 
-/** A shortened ItemNetInfo; `odd` adds encodings the writer would not produce itself. */
-function itemInfo(id: [number, number], o: { odd?: boolean; stats?: number[] } = {}): Prop[] {
+/**
+ * A shortened ItemNetInfo; `odd` adds encodings the writer would not produce itself. `quantityRaw`
+ * is ItemQuantity as stored (pieces - 1), default 1 (two pieces).
+ */
+function itemInfo(id: [number, number], o: { odd?: boolean; stats?: number[]; quantityRaw?: number; blueprint?: string } = {}): Prop[] {
   const stats = o.stats ?? [0, 0, 0, 0, 0, 0, 0, 0];
   return [
-    path('ItemArchetype', `BlueprintGeneratedClass ${RIOT}`),
+    path('ItemArchetype', `BlueprintGeneratedClass ${o.blueprint ?? RIOT}`),
     struct('ItemId', 'ItemNetID', [u32('ItemID1', id[0]), u32('ItemID2', id[1])]),
-    u32('ItemQuantity', 1),
+    u32('ItemQuantity', o.quantityRaw ?? 1),
     double('CreationTime', 1234.5),
     o.odd ? str('CustomItemName', 'Bär') : str('CustomItemName', 'Plain'),
     o.odd ? wideAscii('CrafterCharacterName', 'Smith') : str('CrafterCharacterName', 'Smith'),
@@ -159,7 +162,8 @@ test('cluster: decoded view', () => {
   const [a, b] = v.items;
   assert.equal(a.blueprint, `BlueprintGeneratedClass ${RIOT}`);
   assert.deepEqual(a.itemId, [100, 200]);
-  assert.equal(a.quantity, 1);
+  assert.equal(a.quantityRaw, 1, 'ItemQuantity as stored');
+  assert.equal(a.quantity, 2, 'pieces: ItemQuantity + 1');
   assert.equal(a.quality, 4);
   assert.equal(a.rating, 3.25);
   assert.equal(a.durability, 250);
@@ -215,8 +219,8 @@ test('add-item: new item with free values, everything else unchanged', () => {
     crafterName: 'Test Crafter', expiresIn: 3600,
   }, { now: 1_800_000_000, randomId: () => ids.shift()! });
   assert.deepEqual(added, {
-    index: 2, itemId: [5, 6], blueprint: `BlueprintGeneratedClass ${RIOT}`, uploadTime: 1_800_000_000, expiration: 1_800_003_600,
-    owner: '123456789',
+    index: 2, itemId: [5, 6], blueprint: `BlueprintGeneratedClass ${RIOT}`, quantity: 1, quantityRaw: 0, uploadTime: 1_800_000_000,
+    expiration: 1_800_003_600, owner: '123456789',
   });
   const out = writeClusterTree(tree);
   const v = readCluster(out);
@@ -229,7 +233,8 @@ test('add-item: new item with free values, everything else unchanged', () => {
   assert.equal(it.quality, 5);
   assert.equal(it.rating, 99.5);
   assert.equal(it.durability, 1e6);
-  assert.equal(it.quantity, 1);
+  assert.equal(it.quantity, 1, 'default: one piece');
+  assert.equal(it.quantityRaw, 0, 'one piece is stored as ItemQuantity 0');
   assert.equal(it.isBlueprint, false);
   assert.equal(it.customName, 'Treuebonus');
   assert.equal(it.crafterName, 'Test Crafter');
@@ -254,6 +259,9 @@ test('add-item: empty file gets the structure the game writes', () => {
   const v = readCluster(out);
   assert.equal(v.items.length, 1);
   assert.equal(v.items[0].quantity, 100);
+  assert.equal(v.items[0].quantityRaw, 99, 'a stack of 100 is stored as 99, like the game writes it');
+  assert.equal(added.quantity, 100);
+  assert.equal(added.quantityRaw, 99);
   assert.equal(v.items[0].owner, '42');
   assert.equal(v.items[0].expiration, 1_800_086_400, 'default expiry is one day, like the servers write it');
   assert.ok(added.itemId.every((x) => x > 0 && x < 1e9));
@@ -266,10 +274,56 @@ test('add-item: rejects what the file cannot hold', () => {
   assert.throws(() => addItem(tree(), { blueprint: bp, stats: [1, 2, 3, 4, 5, 6, 7, 8, 9] }), /at most 8/);
   assert.throws(() => addItem(tree(), { blueprint: bp, colors: [40000] }), /color 0/);
   assert.throws(() => addItem(tree(), { blueprint: bp, quality: 256 }), /quality/);
+  assert.throws(() => addItem(tree(), { blueprint: bp, quantity: 0 }), /quantity must be an integer from 1/);
+  assert.throws(() => addItem(tree(), { blueprint: bp, quantity: 1.5 }), /quantity/);
+  assert.throws(() => addItem(tree(), { blueprint: bp, quantity: 2 ** 32 + 1 }), /quantity/);
   assert.throws(() => addItem(tree(), { blueprint: bp, durability: 1e39 }), /durability/);
   assert.throws(() => addItem(tree(), { blueprint: bp, expiration: 2 ** 32 }), /expiration/);
   assert.throws(() => addItem(tree(), { blueprint: bp, itemId: [300, 400] }), /already in the file/);
   assert.throws(() => addItem(tree(), { blueprint: 'Rex' }), /not an item class path/);
+});
+
+const INGOT = '/Game/PrimalEarth/CoreBlueprints/Resources/PrimalItemResource_MetalIngot.PrimalItemResource_MetalIngot_C';
+const AMMO = '/Game/PrimalEarth/CoreBlueprints/Items/Weapons/PrimalItemAmmo_SimpleBullet.PrimalItemAmmo_SimpleBullet_C';
+
+/** ItemQuantity straight from the bytes, with the export reader (not the cluster view). */
+const storedQuantities = (buf: Buffer): number[] =>
+  (readContainer(buf).objects[0].props.MyArkData as { ArkItems: { ArkTributeItem: { ItemQuantity: number } }[] })
+    .ArkItems.map((e) => e.ArkTributeItem.ItemQuantity);
+
+test('cluster: ItemQuantity is pieces - 1, as in files the game wrote', () => {
+  // Like real uploads: a full stack of 100 stores 99, a full stack of 50 stores 49, a single item 0.
+  const buf = buildContainer([{
+    cls: 'ArkCloudInventoryData', names: ['ArkCloudInventoryData_0'], isItem: true, extra: Buffer.alloc(4),
+    props: [struct('MyArkData', 'ArkInventoryData', [structArray('ArkItems', [
+      entry(itemInfo([1, 1], { blueprint: INGOT, quantityRaw: 99 }), 1_800_000_000),
+      entry(itemInfo([2, 2], { blueprint: AMMO, quantityRaw: 49 }), 1_800_000_000),
+      entry(itemInfo([3, 3], { quantityRaw: 0 }), 1_800_000_000),
+    ])])],
+  }], 4);
+  const v = readCluster(buf);
+  assert.deepEqual(v.items.map((i) => i.quantity), [100, 50, 1]);
+  assert.deepEqual(v.items.map((i) => i.quantityRaw), [99, 49, 0]);
+  assert.ok(writeClusterTree(readClusterTree(buf)).equals(buf));
+});
+
+test('add-item: --quantity 1, 50 and 100 are written as 0, 49 and 99 and read back as pieces', () => {
+  let tree = readClusterTree(clusterFile());
+  const added = [];
+  for (const [blueprint, quantity] of [[RIOT, 1], [AMMO, 50], [INGOT, 100]] as const) {
+    const r = addItem(tree, { blueprint, quantity }, { now: 1_800_000_000 });
+    tree = r.tree;
+    added.push(r.added);
+  }
+  assert.deepEqual(added.map((a) => [a.quantity, a.quantityRaw]), [[1, 0], [50, 49], [100, 99]]);
+  const out = writeClusterTree(tree);
+  assert.deepEqual(storedQuantities(out), [1, 1, 0, 49, 99], 'the two fixture items store 1 each');
+  const v = readCluster(out);
+  assert.deepEqual(v.items.map((i) => i.quantity), [2, 2, 1, 50, 100]);
+  // Round trip: read, write, read again gives the same bytes and the same pieces.
+  const again = writeClusterTree(readClusterTree(out));
+  assert.ok(again.equals(out));
+  assert.deepEqual(readCluster(again).items.map((i) => i.quantity), [2, 2, 1, 50, 100]);
 });
 
 test('itemArchetype accepts the usual spellings', () => {
@@ -284,7 +338,7 @@ test('itemArchetype accepts the usual spellings', () => {
 
 test('item template: one field per name and index', () => {
   const e = tributeItemEntry({
-    archetype: `BlueprintGeneratedClass ${RIOT}`, itemId: [1, 2], quantity: 1, quality: 0, rating: 0, durability: 0, stats: [], colors: [],
+    archetype: `BlueprintGeneratedClass ${RIOT}`, itemId: [1, 2], quantityRaw: 0, quality: 0, rating: 0, durability: 0, stats: [], colors: [],
     isBlueprint: true, customName: null, customDescription: null, crafterName: null, crafterTribe: null, ammo: 0, owner: 0n,
     uploadTime: 0, expiration: 0,
   });
@@ -313,10 +367,22 @@ test('cluster CLI: check, add-item --out / --in-place, refuses when the file cha
     const r1 = run('add-item', src, '--blueprint', RIOT, '--stats', '0,1000', '--expires-at', '2027-01-01T00:00:00Z', '--out', out);
     assert.equal(r1.status, 0, r1.stderr);
     assert.equal(JSON.parse(r1.stdout).added.expiration, Date.parse('2027-01-01T00:00:00Z') / 1000);
+    assert.deepEqual([JSON.parse(r1.stdout).added.quantity, JSON.parse(r1.stdout).added.quantityRaw], [1, 0]);
     assert.equal(readCluster(readFileSync(out)).items.length, 3);
     assert.ok(readFileSync(src).equals(clusterFile()), '--out leaves the input alone');
     assert.notEqual(run('add-item', src, '--blueprint', RIOT, '--out', out).status, 0, 'existing --out needs --force');
     assert.notEqual(run('add-item', src, '--blueprint', RIOT, '--in-place').status, 0, '--in-place needs --backup');
+
+    const ingots = join(dir, 'ingots');
+    const r3 = run('add-item', src, '--blueprint', INGOT, '--quantity', '100', '--out', ingots);
+    assert.equal(r3.status, 0, r3.stderr);
+    assert.deepEqual([JSON.parse(r3.stdout).added.quantity, JSON.parse(r3.stdout).added.quantityRaw], [100, 99]);
+    assert.deepEqual(storedQuantities(readFileSync(ingots)).at(-1), 99);
+    const shown = run('show', ingots);
+    assert.equal(shown.status, 0, shown.stderr);
+    const last = JSON.parse(shown.stdout).items.at(-1);
+    assert.deepEqual([last.quantity, last.quantityRaw], [100, 99]);
+    assert.notEqual(run('add-item', src, '--blueprint', INGOT, '--quantity', '0', '--out', join(dir, 'zero')).status, 0, 'at least one piece');
 
     const r2 = run('add-item', src, '--blueprint', RIOT, '--in-place', '--backup', join(dir, 'bak'));
     assert.equal(r2.status, 0, r2.stderr);
