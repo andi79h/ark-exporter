@@ -218,7 +218,8 @@ ark-export sync --out DIR [--exclude A,B] <SavedArks-Ordner | Map.ark>...
 ark-export mysql --out DIR [--name N] --mysql URL   neuesten Stand und Verlauf nach MySQL übertragen
 ark-export query <datei.sqlite> <SQL> [Parameter]   Zeilen als JSON Lines
 ark-export compare <alt.sqlite> <neu.sqlite>        welche Felder sich ändern
-ark-export cluster show|check|add-item ...          Cluster-Dateien, siehe unten
+ark-export cluster show|check|add-item|dinos|add-dino|copy-item ...
+                                                    Cluster-Dateien, siehe unten
 ark-export edit verify|check|list|delete|decay|clear-inventory|move|copy|pattern-save|pattern-show|pattern-place ...
                                                     Spielstände ändern, siehe unten
 ```
@@ -274,16 +275,29 @@ bin/ark-export cluster add-item 7656119xxxxxxxxxx \
 Ein hochgeladenes Tier ist ein Eintrag in `ArkTamedDinosData`. Das Tier selbst steckt in `DinoData` als eingebettetes Archiv mit drei Objekten: das Tier (`DinoID1/2`, `TamedName`, `TargetingTeam`, `TamerString` …), seine Status-Komponente (Stufen, Werte, Erfahrung) und seine Inventar-Komponente. Kryokapseln, Seelen von Dino Storage v2, dessen Recovery-Liste und S+-Vivarien speichern dasselbe Archiv in `CustomItemDatas[].CustomDataBytes.ByteArrays[].Bytes`. Beim Herunterladen baut das Spiel das Tier aus `DinoData` (`APrimalDinoCharacter::SpawnFromDinoDataEx`, mit dem Team des Abholers und einer Duplikatprüfung). Die übrigen Felder des Eintrags (Name, die zwölf `DinoStats`-Texte, Erfahrung) zeigt nur die Upload-Liste an.
 
 ```
-ark-export cluster dinos <datei | save.ark>...       Tiere, die add-dino kopieren kann (mit Nummer für --pick)
+ark-export cluster dinos <datei | save.ark>... [--install-dir ORDNER] [--level PAKET]
+                                                    Tiere, die add-dino kopieren kann (mit Nummer für --pick)
 ark-export cluster add-dino <datei> --from DATEI (--pick N | --source-id A:B) (--out DATEI | --in-place --backup ORDNER) [Optionen]
 ark-export cluster copy-item <datei> --from DATEI --index N (--out DATEI | --in-place --backup ORDNER) [Optionen]
 ```
 
-- **Quellen für `add-dino`:** Uploads, Seelen und Kryokapseln aus einer anderen Cluster-Datei. Aus einem Spielstand (`.ark`) kommen Tiere in Seelen, in der Dino-Storage-Recovery-Liste, in Kryokapseln und in Vivarien. Tiere, die frei in der Welt stehen, sind Objekte des Spielstands selbst und noch nicht kopierbar. Den Klassenpfad liefert der Upload-Eintrag, bei Kryokapseln `CustomDataClasses` und bei Seelen `CustomDataStrings`. Bei Vivarien kommt er von einem anderen Tier derselben Klasse, sonst gibt man ihn mit `--blueprint` an.
+- **Quellen für `add-dino`:** Uploads, Seelen und Kryokapseln aus einer anderen Cluster-Datei. Aus einem Spielstand (`.ark`) kommen Tiere in Seelen, in der Dino-Storage-Recovery-Liste, in Kryokapseln und in Vivarien sowie gezähmte Tiere, die frei in der Welt stehen (`kind: world`, siehe unten). So lässt sich jedes Tier aus einer Sicherung einem Spieler als Upload zurückgeben.
+- **Klassenpfad:** Ihn liefert der Upload-Eintrag, bei Kryokapseln `CustomDataClasses` und bei Seelen `CustomDataStrings`. Bei Vivarien und Tieren aus der Welt steht im `.ark` nur der Kurzname, etwa `TekStrider_Character_BP_C`. Dann wird in dieser Reihenfolge gesucht:
+  1. ein anderes Tier derselben Klasse in derselben Datei (Seele, Kryokapsel, Upload),
+  2. die Namenstabelle des Spielstands: ein Eintrag mit `/`, der auf `.<Klasse ohne _C>` oder `.<Klasse>` endet,
+  3. mit `--install-dir` die Spieldateien: `<Name>.uasset` unter `ShooterGame/Content`. Mods liegen unter `Content/Mods/<id>/`; ihr Paketpfad, etwa `/Game/Mods/DinoStorage2/…`, steht in der Datei selbst. Symbolische Links werden verfolgt.
+  4. Sonst gibt man ihn mit `--blueprint` an.
+
+  Findet ein Schritt mehr als einen Pfad, wird keiner genommen (`blueprintCandidates`), denn Mods liefern gleichnamige Kopien von Kernklassen. `cluster dinos` zeigt in `blueprintFrom`, woher der Pfad stammt (`own`, `same-class`, `name-table`, `install-dir`).
+- **Tiere aus der Welt:** Gelistet werden lebende Tiere mit `TargetingTeam` ≥ 50.000 (Stamm oder Spieler); tote und zweite Einträge desselben Actors nennt `warnings`. Das Tier wird mit Status- und Inventar-Komponente gepackt, ohne Items. Verweise auf Objekte außerhalb (Items, Bauteile auf einem Plattformsattel, Bett) werden entfernt und in `droppedRefs` gezählt. Danach wird das Archiv an die Archive angeglichen, die das Spiel selbst schreibt:
+  - Jedes Objekt bekommt die äußeren Namen `PersistentLevel`, Karte und Kartenpaket (etwa `/Game/Maps/Genesis2/Gen2`), wie in jeder Seele und Kryokapsel. Das Paket kommt aus Seelen und Kryokapseln derselben Karte im Spielstand, sonst aus der Namenstabelle oder von `--level`. Ohne Paket verweigert `add-dino` das Tier.
+  - Die GUID des Tiers wird null, die Bemal-Komponente fällt weg (`removedObjects`).
+  - Eigenschaften, die das Spiel nie in solche Archive schreibt, fallen weg (`removedProps`): Zeitstempel der Quellkarte (Paarung, Trächtigkeit, Babyalter, Stasis, Erstellung), `TribeName`, die Schalter für Paarung, Umherwandern und Pfeifbefehle, `SaddleStructures`, `Instigator`, eine Trächtigkeit sowie Item-Listen und Zeitstempel der Inventar-Komponente. Belegt an einem Genesis-2-Spielstand: Keines der 4.571 Archive, die das Spiel darin geschrieben hat (Seelen, Recovery-Liste, Vivarien von 16 Karten), enthält eine davon; die 351 gezähmten Tiere in der Welt derselben Datei haben sie.
+  - Alles andere bleibt wie im Spielstand: Werte, Stufen, Mutationen, Abstammung, Prägung, Farben, Name, die übrigen Besitzfelder und die Position.
 - **Was sich ändert:** Das Tier bekommt neue, zufällige `DinoID1/2` (im Archiv und im Eintrag) und `UploadTime` = jetzt. Mit `--name` kommt ein neuer `TamedName` dazu. Alles andere bleibt Byte für Byte: Werte, Mutationen, Abstammung, Prägung, Farben, Inventar und Besitzfelder. Mit `--keep-id` bleiben die IDs erhalten; das ist nur sinnvoll, wenn das Original nicht mehr existiert. Stammt die Quelle aus einem Upload-Eintrag, werden dessen Felder übernommen. Sonst werden sie aus dem Archiv gebildet: `DinoName` als „Name - Lvl N (Art)“ und die `DinoStats`-Texte im Format des Spiels. Stufe = `BaseCharacterLevel` + `ExtraCharacterLevel`; Nahkampf und Tempo werden als (1 + Wert) × 100 % angezeigt.
 - **`copy-item`** kopiert ein hochgeladenes Item, etwa eine gefüllte Seele, in eine andere Datei. Es bekommt eine neue ItemID, Upload- und Ablaufzeit sowie die `OwnerPlayerDataID` des Ziels. Tiere darin erhalten neue IDs. Dino Storage führt die IDs zusätzlich als Text `"id1 id2"` und den Besitzer als SteamID in `CustomDataStrings`; beides wird ersetzt. Die SteamID kommt standardmäßig aus dem Namen der Zieldatei.
 - **Prüfungen:** wie bei `add-item`. Gelesen wird streng, und vor dem Schreiben wird alles erneut gelesen und zurückgeschrieben. Mit `--in-place` wird zuerst gesichert, dann atomar ersetzt. Ein Tier, dessen Archiv sich nicht byte-genau zurückschreiben lässt, wird nicht kopiert. Bei mehr als 20 Tieren in der Datei gibt es eine Warnung (`MaxTributeDinos`).
-- **Erprobt** an Kopien echter Dateien: 45 Cluster-Dateien mit 55 hochgeladenen Tieren, 7 Kryokapseln und 3 gefüllten Seelen lassen sich alle in leere und volle Dateien einsetzen. Aus einem echten Genesis-2-Spielstand gilt das für 4.570 von 4.571 Tieren aus Seelen, Recovery-Liste und Vivarien; die Ausnahme ist eine Ferox-Gestalt ohne Klassenpfad. Ob der Server ein so eingesetztes Tier zum Herunterladen anbietet, ist im Spiel zu prüfen (siehe [Offen](#offen)).
+- **Erprobt** an Kopien echter Dateien: 45 Cluster-Dateien mit 55 hochgeladenen Tieren, 7 Kryokapseln und 3 gefüllten Seelen lassen sich alle in leere und volle Dateien einsetzen. Aus einem echten Genesis-2-Spielstand gilt das für alle 4.571 Tiere aus Seelen, Recovery-Liste und Vivarien; die Ferox-Gestalt findet ihren Pfad in der Namenstabelle. Von den 350 gezähmten Tieren in der Welt (44 Klassen) werden 343 zu Uploads, die sich byte-genau zurücklesen lassen, mit neuen DinoIDs. Den übrigen 7 fehlt der Klassenpfad: ein Floß und sechs Kanus. `cluster dinos` braucht für diesen Spielstand (613 MB) rund 3,5 s und 5,7 GB Arbeitsspeicher. Ob der Server ein so eingesetztes Tier zum Herunterladen anbietet, ist im Spiel zu prüfen (siehe [Offen](#offen)).
 
 ## Spielstände ändern
 
@@ -445,6 +459,7 @@ Aufbau:
 - `editor.ts`, `verify.ts`: `.ark` schreiben, Byte-Beweis, Konsistenz
 - `world.ts`, `operations.ts`, `pattern.ts`: Auswahl, Besitz, Operationen, Bau-Vorlagen
 - `inline.ts`: Objektgruppe aus einem `.ark` als Inline-Archiv (Form von Kryokapseln und Cluster-`DinoData`)
+- `cluster-dinos.ts`, `class-paths.ts`: Tiere in Cluster-Dateien, Tiere aus Spielständen, Klassenpfade zu Kurznamen
 - `normalize.ts`: Schlüssel, Verweise, flüchtige Felder
 - `snapshot.ts`, `history.ts`: Datenbanken
 - `cli.ts`, `cluster-cli.ts`, `editor-cli.ts`: Befehle
@@ -466,6 +481,7 @@ Aufbau:
   - Wann liest und schreibt der Server die Datei? Kann er eine gerade eingespielte Änderung mit einem älteren Stand überschreiben, etwa wenn der Spieler gleichzeitig hochlädt?
   - Bietet der Server ein mit `add-dino` eingesetztes Tier zum Herunterladen an? Wem gehört es danach: dem Abholer, wie `SpawnFromDinoDataEx(…, ForTeam, …)` vermuten lässt, oder weiter dem alten Stamm aus `TargetingTeam`?
   - Lässt sich eine mit `copy-item` kopierte Seele vom neuen Besitzer freilassen, obwohl darin noch die Stamm-ID des alten Besitzers steht?
+  - Nimmt der Server ein Tier aus der Welt (`kind: world`) so an? Braucht er die äußeren Namen mit Kartenpaket, und fehlt ihm etwas von dem, was beim Angleichen wegfällt?
 
 - Spielstände ändern, im Spiel zu klären:
   - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?
