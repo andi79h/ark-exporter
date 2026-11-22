@@ -24,6 +24,9 @@ export const VERIFIED_COMMANDS = [
   'ListPlayers', 'ServerChat', 'ServerChatTo', 'ServerChatToPlayer', 'Broadcast', 'KickPlayer', 'BanPlayer', 'UnbanPlayer',
   'AllowPlayerToJoinNoCheck', 'DisallowPlayerToJoinNoCheck', 'SaveWorld', 'SetMessageOfTheDay', 'ShowMessageOfTheDay',
   'GetPlayerIDForSteamID', 'GetSteamIDForPlayerID', 'RenamePlayer', 'RenameTribe', 'GetChat', 'GetGameLog', 'ScriptCommand',
+  // classed "uses the player controller" by the binary analysis, but tested over RCON with the receiving player online:
+  // the item arrives, the server keeps running. Without that player online on this map it ends silently.
+  'GiveItemToPlayer',
 ];
 
 /** Work over RCON but change or stop the whole map. */
@@ -91,13 +94,15 @@ export function checkCommand(line: string, options: PolicyOptions = {}): PolicyR
   if (lower(options.extraDenied ?? []).has(key)) return deny('refused by configuration', { rconClass });
   if (CRASHES.has(key)) return deny('crashed the server in tests', { rconClass });
   if (RCON_KILLERS.has(key)) return deny('the server stops answering RCON afterwards (tested)', { rconClass });
-  if (rconClass === 'allowed-mypc' || rconClass === 'noguard-mypc') return deny('crash candidate (uses the missing player controller)', { rconClass });
+  const verified = VERIFIED.has(key) || lower(options.extraVerified ?? []).has(key);
+  if ((rconClass === 'allowed-mypc' || rconClass === 'noguard-mypc') && !VERIFIED.has(key)) {
+    return deny('crash candidate (uses the missing player controller)', { rconClass });
+  }
   if (rconClass === 'blocked') return deny('does nothing over RCON (the server checks for RCON and stops)', { rconClass });
   if (rconClass === 'unknown') return deny('not classified, could not be checked', { rconClass });
   if (BUFFER.has(key) && options.externalBufferReader) {
     return deny('another program reads the chat/log buffer of this map (BattleMetrics); reading it would take the lines away', { rconClass });
   }
-  const verified = VERIFIED.has(key) || lower(options.extraVerified ?? []).has(key);
   if (rconClass === 'not-listed' && !verified) return deny('unknown command (not in the ASE 358.24 command table)', { rconClass });
   if (key === 'scriptcommand') {
     const sub = command.split(/\s+/)[1] ?? '';
