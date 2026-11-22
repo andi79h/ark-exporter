@@ -6,6 +6,7 @@ import { parseArgs } from 'node:util';
 import { InstallDir } from './class-paths.ts';
 import { addItem, clusterEntries, type NewItem, readCluster, readClusterTree, writeClusterTree } from './cluster.ts';
 import { addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource } from './cluster-dinos.ts';
+import type { MaxStatus } from './creature-stats.ts';
 import { readContainerTree, type TreeNotes, writeContainerTree } from './tree.ts';
 
 export const CLUSTER_USAGE = `Cluster files (clusters/<ClusterId>/<SteamID>):
@@ -281,6 +282,14 @@ const sourceOptions = (v: { 'install-dir'?: string; level?: string }): SourceOpt
   installDir: v['install-dir'] === undefined ? undefined : new InstallDir(resolve(v['install-dir'])), level: v.level,
 });
 
+const STAT_LABELS = ['health', 'stamina', 'torpidity', 'oxygen', 'food', 'water', 'temperature', 'weight'];
+
+/** Estimated maximum stat values of a world creature, rounded like the upload list shows them. */
+const maxStatusView = (m: MaxStatus | null) => (m ? {
+  ...Object.fromEntries(STAT_LABELS.map((n, i) => [n, m.values[i] === null ? null : Math.round(m.values[i]! * 10) / 10])),
+  archives: m.archives, sameMap: m.sameMap,
+} : null);
+
 function dinosCommand(args: string[]): number {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: SOURCE_OPTIONS });
   if (!positionals.length) throw new Error('dinos needs files');
@@ -295,6 +304,7 @@ function dinosCommand(args: string[]): number {
       ...(s.world ? {
         location: s.world.location, tribeName: s.world.tribeName, droppedRefs: s.world.droppedRefs,
         removedProps: s.world.removedProps, removedObjects: s.world.removedObjects, level: s.world.level?.[2] ?? null,
+        maxStatus: maxStatusView(s.world.maxStatus),
       } : {}),
       ...(s.problem ? { problem: s.problem } : {}),
     }));
@@ -348,12 +358,18 @@ function addDinoCommand(args: string[]): number {
   if (!writeClusterTree(readClusterTree(after)).equals(after)) throw new Error('the written file does not round-trip');
   const { target, backup } = commit(src, before, after, values);
   const warnings = added.dinos > 20 ? [`${added.dinos} uploaded creatures in the file; MaxTributeDinos is 20 unless raised`] : [];
+  if (source.world) {
+    const unknown = STAT_LABELS.filter((_, i) => i !== 6 && source.world!.maxStatus?.values[i] == null);
+    if (unknown.length) warnings.push(`upload list: maximum of ${unknown.join(', ')} unknown (no fitting archives of ${source.info.cls} in the save); the current value is shown`);
+  }
   print({
     file: target, backup,
     source: {
       file: resolve(values.from), where: source.where, kind: source.kind, dinoId: source.info.dinoId,
       blueprintFrom: values.blueprint ? 'option' : source.blueprintFrom ?? null,
-      ...(source.world ? { droppedRefs: source.world.droppedRefs, removedProps: source.world.removedProps } : {}),
+      ...(source.world ? {
+        droppedRefs: source.world.droppedRefs, removedProps: source.world.removedProps, maxStatus: maxStatusView(source.world.maxStatus),
+      } : {}),
     },
     before: { bytes: before.length, sha256: sha256(before), dinos: dinosBefore },
     after: { bytes: after.length, sha256: sha256(after), dinos: check.dinos.length },

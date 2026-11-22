@@ -11,6 +11,7 @@ import { clusterEntries, readCluster, readClusterTree, writeClusterTree } from '
 import {
   addDino, copyItem, creatureBlueprint, creatureId, creaturesInCluster, creaturesInSave, dinoStatTexts, readCreatureArchive,
 } from '../src/cluster-dinos.ts';
+import { MaxStatusEstimator } from '../src/creature-stats.ts';
 import { findProperty, type Property, readContainerTree, sameValue, writeContainerTree } from '../src/tree.ts';
 import {
   bool, buildContainer, buildEmbedded, buildSave, bytesArray, double, float, int, type Obj, path, type Prop, str, struct, structArray, u64,
@@ -35,7 +36,7 @@ const paths = (name: string, list: string[]): Prop => ({
 });
 
 /** A creature archive like DinoData: creature, status component, inventory component. */
-function creature(cls: string, id: [number, number], o: { name?: string; team?: number; outer?: string[] } = {}): Buffer {
+function creature(cls: string, id: [number, number], o: { name?: string; team?: number; outer?: string[]; status?: Prop[] } = {}): Buffer {
   const actor = `${cls}_7`;
   const outer = o.outer ?? ['PersistentLevel', 'TheIsland'];
   return buildEmbedded([
@@ -50,7 +51,7 @@ function creature(cls: string, id: [number, number], o: { name?: string; team?: 
     },
     {
       cls: 'DinoCharacterStatusComponent_BP_C', names: ['DinoCharacterStatus_BP_C1', actor, ...outer],
-      props: [
+      props: o.status ?? [
         float('MaxStatusValues', 2572.1), float('MaxStatusValues', 4520.5, 2), float('MaxStatusValues', 0.7221, 8),
         byte('NumberOfLevelUpPointsApplied', 6), int('BaseCharacterLevel', 22), u16('ExtraCharacterLevel', 42),
         float('ExperiencePoints', 14439.5), float('CurrentStatusValues', 2572.1), float('CurrentStatusValues', 95.8, 5),
@@ -285,7 +286,9 @@ const refs = (name: string, list: number[]): Prop => ({
 const TAIL = Buffer.from('0000000001000000', 'hex');
 
 /** A tamed creature standing in the world with its status component (and more objects after it). */
-function worldDino(cls: string, name: string, id: [number, number], at: number, more: Prop[] = [], o: { team?: number; guid?: Buffer } = {}): Obj[] {
+function worldDino(
+  cls: string, name: string, id: [number, number], at: number, more: Prop[] = [], o: { team?: number; guid?: Buffer; status?: Prop[] } = {},
+): Obj[] {
   return [
     {
       cls, names: [name], loc: [100, 200, 300], guid: o.guid,
@@ -295,7 +298,10 @@ function worldDino(cls: string, name: string, id: [number, number], at: number, 
       ],
       extra: TAIL,
     },
-    { cls: 'DinoCharacterStatusComponent_BP_C', names: [`DinoCharacterStatus_BP_C_${at}`, name], props: [int('BaseCharacterLevel', 30)], extra: Buffer.alloc(4) },
+    {
+      cls: 'DinoCharacterStatusComponent_BP_C', names: [`DinoCharacterStatus_BP_C_${at}`, name],
+      props: o.status ?? [int('BaseCharacterLevel', 30)], extra: Buffer.alloc(4),
+    },
   ];
 }
 
@@ -354,7 +360,7 @@ test('creatures in the world: listed with class path, packed like the game packs
     ['world', 'Raptor_Character_BP_C', RAPTOR, 'name-table'],
     ['world', 'Moschops_Character_BP_C', null, null],
   ]);
-  assert.deepEqual(warnings, ['1 dead tamed creatures in the world left out']);
+  assert.deepEqual(warnings, ['3 creatures in the world without maximum torpidity or weight for the upload list (no fitting archives of their class in the save)', '1 dead tamed creatures in the world left out']);
   const rex = list[1];
   assert.equal(rex.where, 'Rex_Character_BP_C_12 (object 1)');
   assert.deepEqual([rex.info.dinoId, rex.info.tamedName, rex.info.level, rex.info.team], [WORLD_REX, 'Rexi', 30, 1_500_000_000]);
@@ -367,6 +373,7 @@ test('creatures in the world: listed with class path, packed like the game packs
     ].sort(),
     removedObjects: ['StructurePaintingComponent'],
     level: CHAIN,
+    maxStatus: null,
   });
   assert.equal(rex.problem, undefined);
 
@@ -433,6 +440,144 @@ test('creatures in the world: map package from the name table or --level, second
   assert.ok(w2.includes('1 second entries of the same creature left out (the game writes some actors twice)'));
 });
 
+// ---------------------------------------------------------------- maximum stat values of world creatures
+
+/** A made-up species with the game's stat formula (see creature-stats.ts), stats 0–7. */
+const SPECIES = {
+  base: [1100, 420, 1550, 150, 3000, 100, 0, 500],
+  perWild: [0.2, 0.1, 0.06, 0.1, 0.1, 0, 0, 0.02],
+  imprint: [0.4, 0, 0.4, 0, 0.4, 0.4, 0, 0.4],
+  add: [0.07, 0, 0.5, 0, 0, 0, 0, 0],
+  perTamed: [0.054, 0.1, 0, 0.1, 0.1, 0, 0, 0.04],
+};
+interface Levels { wild: number[]; tamed: number[]; imprint: number; ineffectiveness: number }
+const levelOf = (l: Levels): number => 1 + l.wild.reduce((a, b) => a + b, 0);
+
+/** BaseLevelMaxStatusValues and MaxStatusValues; scale changes the per-level gains (other server settings). */
+function statValues(l: Levels, scale = 1): { base: number[]; max: number[] } {
+  const te = 1 / (1 + l.ineffectiveness);
+  const base = SPECIES.base.map((b, i) => {
+    const w = i === 2 ? levelOf(l) - 1 : l.wild[i];
+    const v = b * (1 + w * SPECIES.perWild[i] * scale) * (1 + l.imprint * SPECIES.imprint[i]) + SPECIES.add[i];
+    return i === 4 ? v * (1 - 0.13 * (1 - te)) : v; // food shrinks with lower taming effectiveness
+  });
+  return { base, max: base.map((v, i) => v * (1 + l.tamed[i] * SPECIES.perTamed[i] * scale)) };
+}
+
+/**
+ * A status component: levels and current values; for archives also the values the game writes
+ * there (MaxStatusValues only where it differs from the species default).
+ */
+function statusProps(l: Levels, o: { archive?: boolean; scale?: number; current?: (max: number[]) => number[] } = {}): Prop[] {
+  const { base, max } = statValues(l, o.scale);
+  const out: Prop[] = [];
+  l.wild.forEach((w, i) => { if (w) out.push(byte('NumberOfLevelUpPointsApplied', w, i)); });
+  l.tamed.forEach((d, i) => { if (d) out.push(byte('NumberOfLevelUpPointsAppliedTamed', d, i)); });
+  if (l.ineffectiveness) out.push(float('TamedIneffectivenessModifier', l.ineffectiveness));
+  if (l.imprint) out.push(float('DinoImprintingQuality', l.imprint));
+  out.push(int('BaseCharacterLevel', levelOf(l)));
+  if (o.archive) {
+    max.forEach((v, i) => { if (v !== SPECIES.base[i]) out.push(float('MaxStatusValues', v, i)); });
+    base.forEach((v, i) => { if (v) out.push(float('BaseLevelMaxStatusValues', v, i)); });
+  }
+  (o.current ?? ((m) => m))(max).forEach((v, i) => out.push(float('CurrentStatusValues', v, i)));
+  return out;
+}
+
+/** Levels of the k-th archive: wild and domestic points, imprinting and taming effectiveness vary. */
+function archiveLevels(k: number): Levels {
+  let x = 1000 + k * 7919;
+  const next = (n: number): number => (x = (x * 1103515245 + 12345) % 2147483648) % n;
+  return {
+    wild: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => (i === 2 || i === 6 ? 0 : next(45))),
+    tamed: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ([0, 1, 3, 4, 7].includes(i) ? next(35) : 0)),
+    imprint: k % 3 === 0 ? 0 : (k % 5) / 4,
+    ineffectiveness: k % 2 ? 0 : (k % 7) / 10,
+  };
+}
+
+const cryopod = (data: Buffer): Obj => ({
+  cls: 'PrimalItem_WeaponEmptyCryopod_C', names: [`PrimalItem_WeaponEmptyCryopod_C_${data.length}`], isItem: true,
+  props: [structArray('CustomItemDatas', [[
+    { name: 'CustomDataName', type: 'NameProperty', value: (w) => w.name('Dino') },
+    paths('CustomDataClasses', [`BlueprintGeneratedClass ${REX}_C`]),
+    struct('CustomDataBytes', 'CustomItemByteArrays', [structArray('ByteArrays', [[bytesArray('Bytes', data)]])]),
+  ]])],
+});
+
+const WORLD_LEVELS: Levels = { wild: [37, 22, 0, 18, 29, 4, 0, 41], tamed: [26, 3, 0, 0, 12, 0, 0, 33], imprint: 0.85, ineffectiveness: 0.25 };
+const worldCurrent = (max: number[]): number[] => max.map((v, i) => (i === 0 ? v * 0.8 : i === 2 ? 0 : i === 7 ? 37.5 : v));
+
+/**
+ * 12 cryopod Rexes of this map, one packed under other settings (left out by the fit), two of another
+ * map with other settings (not used when the map has enough), a Rex in the world with other levels
+ * and a raptor in the world without archives of its class.
+ */
+function statSave(): Buffer {
+  const pods: Obj[] = [];
+  for (let k = 0; k < 12; k++) {
+    pods.push(cryopod(creature('Rex_Character_BP_C', [300 + k, 400 + k], { outer: CHAIN, status: statusProps(archiveLevels(k), { archive: true }) })));
+  }
+  pods.push(cryopod(creature('Rex_Character_BP_C', [320, 420], { outer: CHAIN, status: statusProps(archiveLevels(20), { archive: true, scale: 1.25 }) })));
+  for (const k of [21, 22]) {
+    const other = ['PersistentLevel', 'OtherMap', '/Game/Maps/Other/OtherMap'];
+    pods.push(cryopod(creature('Rex_Character_BP_C', [300 + k, 400 + k], { outer: other, status: statusProps(archiveLevels(k), { archive: true, scale: 2 }) })));
+  }
+  const at = pods.length;
+  return buildSave([
+    ...pods,
+    ...worldDino('Rex_Character_BP_C', 'Rex_Character_BP_C_12', WORLD_REX, at, [], { status: statusProps(WORLD_LEVELS, { current: worldCurrent }) }),
+    ...worldDino('Raptor_Character_BP_C', 'Raptor_Character_BP_C_2', [41, 42], at + 2),
+  ], { map: 'TestMap' });
+}
+
+test('creatures in the world: maximum stat values for the upload list from archives of the same class', () => {
+  const warnings: string[] = [];
+  const list = creaturesInSave(statSave(), { warnings });
+  assert.deepEqual(warnings, ['1 creatures in the world without maximum torpidity or weight for the upload list (no fitting archives of their class in the save)']);
+  const rex = list.find((s) => s.kind === 'world' && s.info.cls === 'Rex_Character_BP_C')!;
+  const m = rex.world!.maxStatus!;
+  assert.deepEqual([m.archives, m.sameMap], [13, true], 'the archives of this map, the one packed under other settings included');
+  const want = statValues(WORLD_LEVELS).max;
+  m.values.forEach((v, i) => {
+    if (i === 6) assert.equal(v, null, 'temperature has no maximum');
+    else assert.ok(v !== null && Math.abs(v - want[i]) <= 1e-4 * want[i], `stat ${i}: ${v} for ${want[i]}`);
+  });
+  // A world save holds none of the values the fit was made from.
+  const status = readCreatureArchive(rex.data)!.status!.props.map((p) => p.name);
+  assert.ok(!status.includes('MaxStatusValues') && !status.includes('BaseLevelMaxStatusValues'));
+
+  // The upload list shows them; the creature itself stays as it was in the save.
+  const { tree } = addDino(null, rex, {}, { now: 1_900_000_000, randomId: () => [7, 8] });
+  const stats = readCluster(writeClusterTree(tree)).dinos[0].stats as string[];
+  const cur = worldCurrent(want).map(Math.fround);
+  assert.equal(stats[0], `Health: ${cur[0].toFixed(1)} / ${want[0].toFixed(1)}`);
+  assert.equal(stats[2], `Torpidity: 0.0 / ${want[2].toFixed(1)}`);
+  assert.equal(stats[4], `Food: ${cur[4].toFixed(1)} / ${want[4].toFixed(1)}`);
+  assert.equal(stats[7], `Weight: 37.5 / ${want[7].toFixed(1)}`);
+  assert.equal(stats[6], 'Temperature: 0.0 / 0.0');
+  sameExcept(rex.data, findProperty(clusterEntries(tree, 'ArkTamedDinosData')[0], 'DinoData')!.value as Buffer, ['DinoID1', 'DinoID2']);
+
+  // Without archives of its class: no estimate, the current values as before.
+  const raptor = list.find((s) => s.info.cls === 'Raptor_Character_BP_C')!;
+  assert.equal(raptor.world!.maxStatus, null);
+  const bare = readCluster(writeClusterTree(addDino(null, raptor, { blueprint: RAPTOR }).tree)).dinos[0].stats as string[];
+  assert.deepEqual([bare[2], bare[7]], ['Torpidity: 0.0 / 0.0', 'Weight: 0.0 / 0.0']);
+});
+
+test('maximum stat values: one archive with the same levels is enough, other levels need more', () => {
+  const status = (l: Levels, archive: boolean) =>
+    readCreatureArchive(creature('Rex_Character_BP_C', [1, 2], { status: statusProps(l, { archive }) }))!.status!.props;
+  const l = archiveLevels(1);
+  const est = new MaxStatusEstimator([{ cls: 'Rex_Character_BP_C', map: 'TestMap', status: status(l, true) }]);
+  const same = est.estimate('Rex_Character_BP_C', 'TestMap', status(l, false))!;
+  const want = statValues(l).max;
+  assert.ok(Math.abs(same.values[7]! - want[7]) < 1e-3, `${same.values[7]} for ${want[7]}`);
+  assert.deepEqual([same.archives, same.sameMap], [1, false]);
+  assert.deepEqual(est.estimate('Rex_Character_BP_C', 'TestMap', status(WORLD_LEVELS, false))!.values, new Array(8).fill(null));
+  assert.equal(est.estimate('Raptor_Character_BP_C', 'TestMap', []), null);
+});
+
 test('class paths: name table entries and game files, ambiguous answers are not used', () => {
   const names = classPathsInNames([
     `${REX}_C`, `BlueprintGeneratedClass ${RAPTOR}_C`, `Blueprint'${MOSCHOPS}'`, '/Game/A/B.C', 'Rex_Character_BP_C', '/Game/Maps/Test/TestMap',
@@ -491,7 +636,7 @@ test('cluster CLI: a creature from the world of a save into the uploads', () => 
     const list = run('dinos', save);
     assert.equal(list.status, 0, list.stderr);
     const res = JSON.parse(list.stdout);
-    assert.deepEqual(res.warnings, ['1 dead tamed creatures in the world left out']);
+    assert.deepEqual(res.warnings, ['3 creatures in the world without maximum torpidity or weight for the upload list (no fitting archives of their class in the save)', '1 dead tamed creatures in the world left out']);
     const rex = res.creatures.find((c: { kind: string; cls: string }) => c.kind === 'world' && c.cls === 'Rex_Character_BP_C');
     assert.deepEqual([rex.blueprint, rex.blueprintFrom, rex.level, rex.droppedRefs], [REX, 'same-class', LEVEL, { InventoryItems: 1, TamedFollowTarget: 1 }]);
     assert.deepEqual(rex.location, { x: 100, y: 200, z: 300 });

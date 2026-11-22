@@ -16,12 +16,15 @@
 //
 // Creatures that stand in the world of a save are objects of the save itself. They are packed into
 // the same archive form with toInlineArchive and then shaped like the archives the game writes (see
-// asGameArchive), so a creature from any backup can be handed back as an upload.
+// asGameArchive), so a creature from any backup can be handed back as an upload. A world save holds
+// no maximum stat values; for the texts of the upload list they are estimated from the archives of
+// the same class in the save (creature-stats.ts).
 import { randomInt } from 'node:crypto';
 import { assetName, classPathsInNames, InstallDir } from './class-paths.ts';
 import {
   clusterData, clusterEntries, createClusterTree, DEFAULT_EXPIRES_IN, defaultOwner, itemIds, randomItemId,
 } from './cluster.ts';
+import { type MaxStatus, MaxStatusEstimator } from './creature-stats.ts';
 import { SaveEditor } from './editor.ts';
 import { toInlineArchive } from './inline.ts';
 import { readSave, type SaveFile } from './savegame.ts';
@@ -160,6 +163,11 @@ export interface WorldPacking {
   removedObjects: string[];
   /** Outer names added to every object: ["PersistentLevel", map, map package]; null if unknown. */
   level: string[] | null;
+  /**
+   * MaxStatusValues 0–7 for the texts of the upload list (DinoStats), estimated from archives of
+   * the same class in the save; null without such archives.
+   */
+  maxStatus: MaxStatus | null;
 }
 
 const LISTING = /^(.*) - Lvl (\d+) \((.+)\)$/;
@@ -379,6 +387,12 @@ function worldCreatures(ed: SaveEditor, save: SaveFile, archives: CreatureSource
   if (!ed.hibernationEmpty) warnings.push('the hibernation block is not empty; creatures stored there are not listed');
   const chain = levelChain(save, archives, ed.table.names, level);
   if (!chain) warnings.push(`map package of ${save.dataFiles[0]} unknown (no creature archive of this map in the save); give level (--level)`);
+  const stats = new MaxStatusEstimator(archives.flatMap((s) => {
+    const a = readCreatureArchive(s.data);
+    return a?.status ? [{ cls: a.creature.cls ?? '', map: a.creature.names[2] ?? null, status: a.status.props }] : [];
+  }));
+  const map = save.dataFiles[0] ?? null;
+  let unknownStats = 0;
   const out: CreatureSource[] = [];
   const names = new Set<string>();
   let dead = 0;
@@ -398,16 +412,21 @@ function worldCreatures(ed: SaveEditor, save: SaveFile, archives: CreatureSource
       continue;
     }
     const loc = o.loc;
+    const maxStatus = stats.estimate(a.creature.cls ?? '', map, a.status?.props ?? []);
+    if (!maxStatus || maxStatus.values[2] === null || maxStatus.values[7] === null) unknownStats++;
     out.push({
       where: `${o.names[0]} (object ${o.index})`, kind: 'world', data: shaped.bytes, blueprint: null, species: null, info: creatureInfo(a),
       world: {
         index: o.index,
         location: { x: Number(loc.x), y: Number(loc.y), z: Number(loc.z) },
         tribeName: typeof p.TribeName === 'string' ? p.TribeName : null,
-        droppedRefs: packed.droppedRefs, removedProps: shaped.removedProps, removedObjects: shaped.removedObjects, level: chain,
+        droppedRefs: packed.droppedRefs, removedProps: shaped.removedProps, removedObjects: shaped.removedObjects, level: chain, maxStatus,
       },
       ...(chain ? {} : { problem: 'map package unknown; give level (--level)' }),
     });
+  }
+  if (unknownStats) {
+    warnings.push(`${unknownStats} creatures in the world without maximum torpidity or weight for the upload list (no fitting archives of their class in the save)`);
   }
   if (dead) warnings.push(`${dead} dead tamed creatures in the world left out`);
   if (twice) warnings.push(`${twice} second entries of the same creature left out (the game writes some actors twice)`);
@@ -498,12 +517,17 @@ const STAT_NAMES = [
   'Fortitude', 'Crafting Skill',
 ];
 
-/** The 12 texts the upload list shows, in the format of the game ("Health: 2572.1 / 2572.1", "Melee Damage: 172.2 %"). */
-export function dinoStatTexts(a: CreatureArchive): string[] {
+/**
+ * The 12 texts the upload list shows, in the format of the game ("Health: 2572.1 / 2572.1", "Melee
+ * Damage: 172.2 %"). The maximum is MaxStatusValues, else the estimate (never below the current
+ * value), else the current value (torpidity 0).
+ */
+export function dinoStatTexts(a: CreatureArchive, estimated: (number | null)[] = []): string[] {
   const s = a.status?.props;
   return STAT_NAMES.map((name, i) => {
     const cur = num(s, 'CurrentStatusValues', i) ?? 0;
-    const max = num(s, 'MaxStatusValues', i) ?? (i === 2 ? 0 : cur);
+    const est = estimated[i];
+    const max = num(s, 'MaxStatusValues', i) ?? (est != null ? Math.max(cur, est) : i === 2 ? 0 : cur);
     if (i === 2) return `${name}: 0.0 / ${max.toFixed(1)}`;
     if (i === 8 || i === 9 || i === 11) return `${name}: ${((1 + cur) * 100).toFixed(1)} %`;
     if (i === 10) return `${name}: ${cur.toFixed(1)}`;
@@ -651,7 +675,7 @@ export function addDino(
   } else {
     entry = tributeDinoEntry({
       blueprint, data: bytes, name: listingName(null), nameInMap: a.creature.names[0] ?? `${info.cls}_0`,
-      stats: dinoStatTexts(a), experience: info.experience ?? 0, dinoId, uploadTime,
+      stats: dinoStatTexts(a, src.world?.maxStatus?.values), experience: info.experience ?? 0, dinoId, uploadTime,
     });
   }
 
