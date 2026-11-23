@@ -81,7 +81,7 @@ function readArray(a: Archive, elementType: string | null, size: number, propNam
       if (size === n + 4) {
         // Plain bytes. Cryopods keep a whole serialized creature in here.
         const bytes = a.bytes(n);
-        const decoded = ctx.decodeBytes ? ctx.decodeBytes(propName, bytes) : null;
+        const decoded = ctx.decodeBytes ? ctx.decodeBytes(propName, bytes, ctx) : null;
         if (decoded !== null) return decoded;
         ctx.keepRaw(`byte array ${propName}`, n);
         return new Blob(bytes, 'bytes');
