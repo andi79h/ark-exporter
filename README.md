@@ -16,7 +16,7 @@ Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**.
 | ARK: Survival Evolved, Save-Version 9 | vollständig, getestet mit Genesis 2 |
 | ARK: Survival Evolved, Save-Version 10–11 (neuere Spielstände) | teilweise: Welt und Eigenschaften wie bei 9; die angehängten Blöcke mit Stämmen, Spielern und Kryo-Speicher werden noch nicht gelesen und in `inspect` als „unaccounted“ gezählt; ohne Beispiel-Save ungetestet |
 | ARK: Survival Evolved, Save-Version 12 | noch nicht |
-| ARK: Survival Ascended (ASA) | noch nicht |
+| ARK: Survival Ascended (ASA), Save-Version 13–16 | `inspect` liest Welt-Save, Kryokapseln, `.arkprofile` und `.arktribe` und misst die Abdeckung; an 13 Karten eines Community-Clusters (Save-Version 16, 2,25 GB Nutzdaten) geprüft: 99,9999 % strukturiert gelesen (1,8 KB offen), alle 54.202 Kryokapseln und 19 Bauvorlagen vollständig, Profile und Stämme zu 100 %. Snapshot und Verlauf folgen |
 | ASE-Cluster-Dateien (`clusters/<ClusterId>/<SteamID>`) | lesen und byte-genau zurückschreiben, Items anhängen (`ark-export cluster`, siehe [Cluster-Dateien](#cluster-dateien)) |
 
 ASA speichert ganz anders als ASE:
@@ -24,7 +24,17 @@ ASA speichert ganz anders als ASE:
 - **Kopf und Positionen:** Kopf, Namenstabelle und Positionen stehen in der Tabelle `custom`.
 - **Eigenschaften:** Sie folgen dem Unreal-5-Format.
 
-Ein Leser dafür ist machbar; ASV enthält dafür ein eigenes Toolkit von rund 2.200 Zeilen. Zum Testen braucht es aber ASA-Spielstände.
+- **Eigenschafts-Köpfe:** Seit Unreal 5.5 (Save-Version 14, Juni 2025) steht der Typ als Baum im Kopf (`ArrayProperty<StructProperty<Vector>>`), dazu ein Flag-Byte mit Index, GUID und dem Wert von Booleans. Version 13 nutzt noch die UE4-Köpfe mit einem zusätzlichen Byte.
+- **Kryokapseln:** Der Inhalt ist mit zlib gepackt und darüber noch einmal byteweise kodiert. Er hat eine eigene Namenstabelle, kleine Namens-IDs kommen aus einer festen Tabelle des Spiels. Diese Tabelle ist nicht veröffentlicht; fehlende Einträge wurden aus der Reihenfolge der Eigenschaften in der Welt erschlossen.
+- **Positionen:** `ActorTransforms` hält je Actor die GUID, die Position (3 Doubles) und die Drehung als Quaternion (4 Doubles); der Export rechnet sie in Pitch, Yaw und Roll um.
+- **Foliage:** Hinter dem `InstancedFoliageActor` steht je Pflanzenart ein eingebettetes Unterobjekt mit eigener Eigenschaftsliste. `InstancesVisibility` hält ein Bit je Pflanze, also den Erntezustand.
+- **`GameModeCustomBytes`:** Ohne `-usestore` ein leeres Verzeichnis für Stämme und Spieler, danach die Bestenlisten der Missionen (Genesis).
+- **Bauvorlagen:** `PrimalItem_TemplateTablet` hält die Vorlage wie eine Kryokapsel (int32 1, Größe, zlib, dieselbe Byte-Kodierung). Darin stehen Autor, Name, Beschreibung, die Liste der Bauteil-Klassen und je Bauteil Klasse, Skin, relative Position und Drehung.
+- **Byte-Felder:** Bunker speichern ihre Rasterzellen als je 3 Byte (x, y, z). `SkillRanks` und `UnlockedShipSkillRanks` halten einen Rang 0–3 je Skill, `MembersRankGroups` die Ranggruppe je Stammesmitglied.
+
+Gemessen an 13 Karten (2,25 GB Nutzdaten, 2.149 Profile und Stämme) bleiben 1.779 Byte roh. Alle sind Nullbytes in Item-Daten, deren Bedeutung offen ist: je 1 Byte in den Feldern 1–5 der Polar-Gargoyle-Kryokapseln, 3 und 6 Byte in `HelperBotData`, 1 Byte in `ItemTraitData`. In Bauvorlagen sind je Bauteil ein int32 (0 oder 1), ein Name (immer „None“) und 36 Byte (immer 0) gelesen, aber nicht gedeutet. Lesezeit mit Bun auf einem Mac: 0,2–2,6 s je Karte.
+
+Der Leser steht in `src/asa/`. Als Vorlagen für das Format dienten [ark-sa-save-tools](https://github.com/Kakoen/ark-sa-save-tools) (Kakoen), [arkparser](https://github.com/vertyco/arkparser) (Vertyco, MIT) und das AsaSavegameToolkit aus ASV. `ark-export inspect <Map>_WP.ark` erkennt ASA an der SQLite-Kennung. Es misst die Abdeckung gegen die Nutzdaten der Datei, also alle Schlüssel und Werte. Die Seitenstruktur von SQLite wird getrennt ausgewiesen. Liegen `.arkprofile`- und `.arktribe`-Dateien im selben Ordner, prüft es diese mit. Mit `--limit N` liest es nur die ersten N Objekte.
 
 > **Datenschutz:** Exporte enthalten Steam-IDs, Spielernamen und zuletzt genutzte IP-Adressen aus den Profilen. Nicht veröffentlichen.
 

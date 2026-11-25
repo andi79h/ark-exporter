@@ -2,6 +2,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { inspectAsa, inspectContainers, isAsaWorld } from './asa/inspect.ts';
 import { CLUSTER_USAGE, clusterCommand } from './cluster-cli.ts';
 import { pruneSnapshots, updateHistory } from './history.ts';
 import { VOLATILE_FIELDS } from './normalize.ts';
@@ -13,7 +14,8 @@ import { ReadContext } from './types.ts';
 const USAGE = `ark-export ${EXPORTER_VERSION} – ARK: Survival Evolved savegame export
 
 Usage:
-  ark-export inspect <Map.ark>                       coverage report (JSON), writes nothing
+  ark-export inspect <Map.ark> [--limit N]            coverage report (JSON), writes nothing;
+                                                     ASE and ASA (SQLite) world saves, ASA .arkprofile/.arktribe
   ark-export snapshot <Map.ark> --out DIR [--name N]  full snapshot into DIR/N/snapshots/<time>.sqlite
   ark-export history --out DIR --name N [--keep K]    diff newest snapshot against the previous one
   ark-export run <Map.ark> --out DIR [--name N] [--keep K]
@@ -106,7 +108,15 @@ async function runOne(save: string, out: string, name: string, keep: number, con
   pruneSnapshots(mapDir, keep, log);
 }
 
-async function inspect(save: string): Promise<void> {
+async function inspect(save: string, limit: number | undefined, containers: boolean): Promise<void> {
+  if (/\.ark(profile|tribe)$/.test(save)) {
+    process.stdout.write(`${JSON.stringify(inspectContainers([save]), null, 2)}\n`);
+    return;
+  }
+  if (isAsaWorld(save)) {
+    process.stdout.write(`${JSON.stringify(await inspectAsa(save, { limit, containers }), null, 2)}\n`);
+    return;
+  }
   const t0 = performance.now();
   const ctx = new ReadContext();
   const s = readSave(readFileSync(save), ctx);
@@ -188,6 +198,7 @@ async function main(argv: string[]): Promise<number> {
       'no-containers': { type: 'boolean', default: false },
       exclude: { type: 'string', default: '' },
       mysql: { type: 'string' },
+      limit: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -202,7 +213,7 @@ async function main(argv: string[]): Promise<number> {
   };
   switch (values.help ? 'help' : command) {
     case 'inspect':
-      await inspect(args[0]);
+      await inspect(args[0], values.limit ? Number(values.limit) : undefined, containers);
       return 0;
     case 'snapshot': {
       const save = resolve(args[0]);
