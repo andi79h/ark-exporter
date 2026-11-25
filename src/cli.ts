@@ -25,7 +25,7 @@ Usage:
   ark-export mysql --out DIR [--name N] --mysql URL  copy newest snapshot and history to MySQL
   ark-export query <file.sqlite> <SQL> [params...]   print rows as JSON lines
   ark-export compare <old.sqlite> <new.sqlite>       which fields change between two snapshots
-  ark-export cluster show|check|add-item ...         cluster files, see below
+  ark-export cluster <command> ...                   cluster files, see below
 
 Options:
   --out DIR        export directory (one folder per map)
