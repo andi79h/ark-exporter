@@ -59,6 +59,7 @@ Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabe
 | `GetChat`/`GetGameLog` abgelehnt, wenn `externalBufferReader: true` | leeren den gemeinsamen Puffer |
 | Getestete Befehle (`ListPlayers`, `ServerChat`, `KickPlayer`, `BanPlayer` …): Recht `console` | |
 | Abgelehnt: `SetGlobalPause` | danach antwortet der Server nicht mehr per RCON (getestet) |
+| Immer abgelehnt, auch über `extraVerified` nicht freizuschalten: `DumpConfig`, `QueueCheat`, `SpawnServerStatReplicator` (ASA) | `DumpConfig` schreibt das Admin- und das Join-Passwort im Klartext ins Server-Log (auf ASA getestet); die beiden anderen nutzen den fehlenden Spieler-Controller, Absturzkandidaten |
 | Befehle mit großer Wirkung (`DoExit`, `DestroyWildDinos` …): Recht `console.risky` | |
 | Laut Analyse lauffähige, aber ungetestete Befehle: nur `superadmin`, auf Live-Karten zusätzlich mit `force`; in Triggern und Zeitplänen nie | |
 

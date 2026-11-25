@@ -19,6 +19,16 @@ export const CONFIRMED_CRASHES = [
 /** Commands after which the server no longer answers RCON (tested on ASE 358.24). */
 export const KILLS_RCON = ['SetGlobalPause'];
 
+/**
+ * Never sent, whatever the configuration says (extraVerified does not unlock them). ASA commands; ASE 358.24 does
+ * not know them, but a command table for ASA must not allow them either.
+ */
+export const NEVER_COMMANDS: Record<string, string> = {
+  DumpConfig: 'writes the admin and the join password into the server log in plain text (tested on ASA)',
+  QueueCheat: 'crash candidate over RCON: uses the missing player controller (ASA)',
+  SpawnServerStatReplicator: 'crash candidate over RCON: uses the missing player controller (ASA)',
+};
+
 /** Tested over RCON on ASE 358.24 without a crash and with the expected effect. */
 export const VERIFIED_COMMANDS = [
   'ListPlayers', 'ServerChat', 'ServerChatTo', 'ServerChatToPlayer', 'Broadcast', 'KickPlayer', 'BanPlayer', 'UnbanPlayer',
@@ -70,6 +80,7 @@ export interface PolicyResult {
 const lower = (list: readonly string[]) => new Set(list.map((s) => s.toLowerCase()));
 const CRASHES = lower(CONFIRMED_CRASHES);
 const RCON_KILLERS = lower(KILLS_RCON);
+const NEVER = new Map(Object.entries(NEVER_COMMANDS).map(([k, v]) => [k.toLowerCase(), v] as const));
 const VERIFIED = lower(VERIFIED_COMMANDS);
 const RISKY = lower(RISKY_COMMANDS);
 const BUFFER = lower(BUFFER_COMMANDS);
@@ -92,6 +103,8 @@ export function checkCommand(line: string, options: PolicyOptions = {}): PolicyR
   const key = name.toLowerCase();
   const rconClass = CLASS_BY_LOWER.get(key) ?? 'not-listed';
   if (lower(options.extraDenied ?? []).has(key)) return deny('refused by configuration', { rconClass });
+  const never = NEVER.get(key);
+  if (never) return deny(never, { rconClass });
   if (CRASHES.has(key)) return deny('crashed the server in tests', { rconClass });
   if (RCON_KILLERS.has(key)) return deny('the server stops answering RCON afterwards (tested)', { rconClass });
   const verified = VERIFIED.has(key) || lower(options.extraVerified ?? []).has(key);

@@ -76,6 +76,16 @@ test('command policy', () => {
   assert.equal(checkCommand('ScriptCommand TCsAR AddArcTotal 76561198000000001 5').ok, true);
   assert.equal(checkCommand('ScriptCommand SomethingElse').ok, false);
   assert.equal(checkCommand('NoSuchCommand').ok, false);
+  // never sent, not even when the operator lists them as verified, with or without a prefix
+  const allNever = { extraVerified: ['DumpConfig', 'QueueCheat', 'SpawnServerStatReplicator'] };
+  for (const cmd of allNever.extraVerified) {
+    for (const line of [cmd, `cheat ${cmd}`, `admincheat ${cmd.toLowerCase()}`]) {
+      const r = checkCommand(line, allNever);
+      assert.equal(r.ok, false, line);
+      assert.match(r.reason!, /password into the server log|crash candidate/, line);
+    }
+  }
+  assert.match(checkCommand('DumpConfig').reason!, /password into the server log/);
 });
 
 test('game log lines', () => {
