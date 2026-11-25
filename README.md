@@ -77,7 +77,7 @@ Jede Zeile hat einen Schlüssel, der Saves und Server-Neustarts überdauert. Zwi
 | `<Besitzer>/<Name>` | Komponenten (Inventar, Status) unter ihrem Besitzer |
 | `dino:…~2`, `~3` … | eingebettete Kopien mit derselben ID; der Ferox legt bei jeder Verwandlung seine alte Gestalt eine Ebene tiefer ab (bis zu 16 Ebenen gesehen) |
 
-Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Das Spiel schreibt sie selbst so; im Spiel ist es jeweils ein Bauteil.
+Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Das schreibt das Spiel selbst so: Verweist ein Actor, der früher in die Datei kommt, auf ein Bauteil, etwa der Boden, auf dem es steht, oder das Teil, an dem es eingerastet ist, hängt der Save-Writer das Bauteil direkt hinter diesen Actor. An seinem eigenen Platz in der Actor-Liste schreibt er es dann ein zweites Mal. Beim Laden wird daraus ein einziger Actor mit den Werten des ersten Eintrags. Entfernte Doppel schreibt der Server beim nächsten Speichern wieder, und ein Bauteil ist erst weg, wenn beide Einträge gelöscht sind. Belegt ist das durch Servertests und den Code von `UWorld::SaveToFile`.
 
 Die GUIDs der Objekttabelle sind als Schlüssel unbrauchbar: Sie sind zu 95 % leer, der Rest ist vielfach doppelt.
 
@@ -325,7 +325,7 @@ Koordinaten sind Unreal-Einheiten (100 = 1 m), wie sie der Admin-Befehl `ccc` im
 
 | Operation | Wirkung |
 |---|---|
-| `delete` | entfernt die Actors samt Komponenten (Inventar, Status, Bemalung) und den Items ihrer Inventare; Verweise anderer Objekte (`LinkedStructures`, `StructuresPlacedOnFloor`, `PlacedOnFloorStructure`, Inventarlisten, Sattel) werden bereinigt. `mayCollapse` nennt die verbleibenden Bauteile, die auf einem gelöschten standen oder daran hingen: Das Spiel prüft beim Laden ihren Halt und lässt sie gegebenenfalls einstürzen (im Servertest geschehen) |
+| `delete` | entfernt die Actors samt Komponenten (Inventar, Status, Bemalung) und den Items ihrer Inventare; Verweise anderer Objekte (`LinkedStructures`, `StructuresPlacedOnFloor`, `PlacedOnFloorStructure`, Inventarlisten, Sattel) werden bereinigt. `mayCollapse` nennt die verbleibenden Bauteile, die auf einem gelöschten standen oder daran hingen. Das Spiel prüft ihren Halt beim Laden nicht: Sie bleiben, wo sie sind, notfalls ohne Träger in der Luft. So war es in einem Servertest mit 30 gelöschten Trägern und 129 Nachbarn, auch nach 15 Minuten Laufzeit. Wer das nicht will, löscht sie mit |
 | `decay` | setzt `LastInAllyRangeTime` auf die Spielzeit des Saves (plus `--days`); der Verfall beginnt dann neu, als wäre gerade ein Stammesmitglied in der Nähe gewesen |
 | `clear-inventory` | entfernt die Items aus `InventoryItems` (mit `--equipped` auch ausgerüstete Items und Slots); Engramme von Werkbänken bleiben, außer mit `--engrams`; Zähler am Behälter (`CurrentItemCount`, bei Super-Structures-Lagern `ResourceCount`) werden angepasst |
 | `move` | verschiebt und dreht um die senkrechte Achse durch den Drehpunkt (Standard: Mitte der Auswahl auf ihrer tiefsten Höhe); Gier-Winkel und Weltkoordinaten in Eigenschaften (Rohr- und Kabelenden, Landeplätze) drehen mit; Bauteile auf Plattformsätteln folgen ihrem Tier; `--with-dinos`/`--with-players` nehmen zahme Tiere bzw. Spielerfiguren derselben Stämme im Bereich mit |
@@ -347,7 +347,7 @@ bin/ark-export edit pattern-place TheIsland.ark --pattern house.json --at -50000
   --team 7654321 --tribe-name "Die Neuen" --out TheIsland.new.ark
 ```
 
-**Doppelte Einträge.** Das Spiel schreibt manche Actors zweimal unter demselben Namen in den Save, mit gleichen Werten. Beim Laden ist das ein einziger Actor. Belegt ist das durch einen Servertest: Ein einmal eingesetztes Bauteil stand nach `saveworld` doppelt im Save. Eine Vorlage übernimmt deshalb je Name nur einen Eintrag und biegt Verweise auf den zweiten um (`duplicatesMerged`); sonst stünde jedes Bauteil nach dem Einsetzen zweimal da. `list` zählt beides (`count`, `uniqueNames`).
+**Doppelte Einträge.** Das Spiel schreibt manche Actors zweimal unter demselben Namen in den Save, mit gleichen Werten. Beim Laden ist das ein einziger Actor, er bekommt die Werte des ersten Eintrags. Belegt ist das durch Servertests: Ein einmal eingesetztes Bauteil stand nach `saveworld` doppelt im Save. Warum das so ist, steht unter [Stabile Schlüssel](#stabile-schlüssel). Eine Vorlage übernimmt deshalb je Name nur einen Eintrag und biegt Verweise auf den zweiten um (`duplicatesMerged`); sonst stünde jedes Bauteil nach dem Einsetzen zweimal da. `list` zählt beides (`count`, `uniqueNames`).
 
 **Inhalt einer Vorlage:**
 - Positionen relativ zu einem Anker. Ohne `--anchor` ist das die Mitte der Auswahl auf ihrer tiefsten Höhe.
@@ -437,7 +437,6 @@ Aufbau:
 
 - Bedeutung der `.arktributetribe`-Zahlen. Eine davon sieht wie ein Unix-Zeitstempel aus.
 - Bedeutung der zwei Vektorlisten nach jeder Spielerfigur, vermutlich letzte Positionen.
-- Doppelt gespeicherte Bauteile: Das Spiel schreibt manche Actors zweimal unter demselben Namen (siehe [Spielstände ändern](#spielstände-ändern)). Offen ist, nach welcher Regel es das tut.
 - Verlauf schneller machen: ein Durchlauf über beide nach Schlüssel sortierten Snapshots statt mehrerer SQL-Joins.
 - Räumlicher Index (SQLite R*Tree) für Suchen nach Bewegungsmustern.
 - ARK: Survival Ascended (anderes Save-Format).

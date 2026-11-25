@@ -12,9 +12,10 @@ export interface DeleteResult {
   /** Objects outside the set whose references were cleaned (removed from arrays, single ones set to none). */
   cleaned: number;
   /**
-   * Remaining structures that stood on, hung on or were snapped to a removed one. The game checks
-   * their support when it loads the save and may let them collapse (seen in a test: a wall next to
-   * a removed wall section was gone after the next save).
+   * Remaining structures that stood on, hung on or were snapped to a removed one. The game does not
+   * check their support when it loads the save: they stay where they are, floating if nothing else
+   * holds them (server test: 30 carriers removed, all 129 neighbours unchanged after loading and
+   * 15 minutes of play time). Delete them as well if that is not wanted.
    */
   mayCollapse: { index: number; cls: string; name: string; via: string[] }[];
 }
