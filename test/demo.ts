@@ -1,19 +1,19 @@
-// Local demo: three fake ARK servers with simulated players, chat and game log, plus the manager and its web UI.
+// Local demo: three fake ARK servers with simulated players, chat and game log, plus the service and its web UI.
 //   node test/demo.ts [port]        → http://127.0.0.1:8790, login demo / demo-password
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { buildConfig } from '../src/manager/config.ts';
-import { openDb } from '../src/manager/db.ts';
-import { Store } from '../src/manager/store.ts';
-import { Manager } from '../src/manager/manager.ts';
-import { WebServer } from '../src/manager/web.ts';
-import { hashPassword } from '../src/manager/auth.ts';
+import { buildConfig } from '../src/rcon/config.ts';
+import { openDb } from '../src/rcon/db.ts';
+import { Store } from '../src/rcon/store.ts';
+import { RconService } from '../src/rcon/service.ts';
+import { WebServer } from '../src/rcon/web.ts';
+import { hashPassword } from '../src/rcon/auth.ts';
 import { FakeArk } from './fake-ark.ts';
 
 const port = Number(process.argv[2] ?? 8790);
-const root = mkdtempSync(join(tmpdir(), 'arkm-demo-'));
+const root = mkdtempSync(join(tmpdir(), 'ark-rcon-demo-'));
 const names = ['Jörg', 'Anna', 'Björn', 'Lys', 'Kalle', 'Mära', 'Tom', 'Zoë'];
 const lines = ['hallo zusammen', 'wo finde ich Metall?', 'danke!', 'gn8', 'hat jemand Kibble übrig?', '!discord', 'Rex gezähmt :)'];
 const maps = ['islandPVE', 'ragnarokPVE', 'claude-rcontest'];
@@ -39,10 +39,10 @@ await store.save('mgr_schedules', null, { name: 'Speichern', enabled: 1, cron: '
   warnings: null, created_by: 'demo', updated: Date.now() });
 await store.save('mgr_commands', null, { name: 'Treuepunkte', description: 'TCsAutoRewards-Punkte gutschreiben (je Karte)', template: 'ScriptCommand TCsAR AddArcTotal {{param.steamId}} {{param.points}}',
   params: JSON.stringify([{ name: 'steamId', type: 'steamId' }, { name: 'points', type: 'number' }]), permission: 'commands.run', targets: null, created_by: 'demo', updated: Date.now() });
-const manager = new Manager(config, store);
-manager.on('warning', (w: string) => console.error('warning', w));
-await manager.start();
-const web = new WebServer(manager);
+const service = new RconService(config, store);
+service.on('warning', (w: string) => console.error('warning', w));
+await service.start();
+const web = new WebServer(service);
 await web.listen(config.web.listen);
 console.log(`demo on http://${config.web.listen} (demo / demo-password), data in ${root}`);
 

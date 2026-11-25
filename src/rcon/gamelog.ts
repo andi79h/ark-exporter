@@ -1,6 +1,6 @@
 // Reads the game log files an ASE server writes with -servergamelog (ShooterGame/Saved/Logs/ServerGame.<pid>.<date>.log).
 // They hold the same lines as the RCON command GetGameLog, but reading the file takes nothing away from other RCON
-// clients, keeps umlauts (RCON turns them into "?") and survives a restart of the manager (the read offset is stored).
+// clients, keeps umlauts (RCON turns them into "?") and survives a restart of the service (the read offset is stored).
 //
 // Line format: [2026.11.19-05.03.29:578][745]2026.11.19_05.03.29: Name joined this ARK!
 // The first bracket is UTC with milliseconds; the second the engine frame.

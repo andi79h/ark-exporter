@@ -1,4 +1,4 @@
-// The manager: one RCON connection per map, player tracking via ListPlayers, chat and game log from the log files,
+// The service: one RCON connection per map, player tracking via ListPlayers, chat and game log from the log files,
 // cluster-wide bans, console, saved and scheduled commands, triggers, Discord relay and an audit log of every action.
 import { EventEmitter } from 'node:events';
 import { RconClient, RconError, parseListPlayers, toArkAscii } from './rcon.ts';
@@ -8,7 +8,8 @@ import { Store, type BanRow, type EventRow } from './store.ts';
 import { can, type Permission, type Role } from './auth.ts';
 import { DiscordRelay, escapeDiscord } from './discord.ts';
 import { cronMatches, parseCron, type CronSpec } from './cron.ts';
-import { readCfgPassword, type ManagerConfig, type MapConfig } from './config.ts';
+import { readCfgPassword, type RconConfig, type MapConfig } from './config.ts';
+import { openDb, type Db } from './db.ts';
 
 export interface Actor {
   name: string;
@@ -17,7 +18,7 @@ export interface Actor {
 }
 export const SYSTEM: Actor = { name: 'system', type: 'system', role: 'superadmin' };
 
-export class ManagerError extends Error {
+export class ServiceError extends Error {
   readonly status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
@@ -97,8 +98,8 @@ export function renderTemplate(template: string, values: Record<string, string>,
   });
 }
 
-export class Manager extends EventEmitter {
-  readonly config: ManagerConfig;
+export class RconService extends EventEmitter {
+  readonly config: RconConfig;
   readonly store: Store;
   readonly maps = new Map<string, MapRuntime>();
   readonly discord: DiscordRelay;
@@ -110,9 +111,10 @@ export class Manager extends EventEmitter {
   private warningsSent = new Set<string>();
   private stopped = false;
   private heartbeat = 0;
+  private databases = new Map<string, Promise<Db>>();
   readonly timeZone: string;
 
-  constructor(config: ManagerConfig, store: Store, opts: { timeZone?: string; fetchImpl?: typeof fetch } = {}) {
+  constructor(config: RconConfig, store: Store, opts: { timeZone?: string; fetchImpl?: typeof fetch } = {}) {
     super();
     this.setMaxListeners(100);
     this.config = config;
@@ -147,7 +149,7 @@ export class Manager extends EventEmitter {
     });
     if (this.config.retentionDays > 0) this.every(6 * 3600_000, () => this.prune());
     for (const hook of this.config.hooks) {
-      const mod = await import(hook) as { default?: (m: Manager) => unknown };
+      const mod = await import(hook) as { default?: (m: RconService) => unknown };
       if (typeof mod.default === 'function') await mod.default(this);
     }
     void this.pollAll();
@@ -167,11 +169,30 @@ export class Manager extends EventEmitter {
     for (const rt of this.maps.values()) { rt.log?.stop(); rt.client?.close(); }
     this.discord.stop();
     await this.store.setState('heartbeat', String(Date.now())).catch(() => undefined);
+    const extra = [...this.databases.values()];
+    this.databases.clear();
+    for (const db of extra) await db.then((d) => d.close()).catch(() => undefined);
+  }
+
+  /**
+   * A further database from `databases` in the configuration, for hooks that write to tables of other
+   * applications (e.g. a legacy web site). Opened on the first call, closed by stop().
+   */
+  database(name: string): Promise<Db> {
+    let db = this.databases.get(name);
+    if (!db) {
+      const url = this.config.databases[name];
+      if (!url) return Promise.reject(new Error(`database "${name}" is not configured (databases.${name} in the configuration)`));
+      db = openDb(url);
+      this.databases.set(name, db);
+      db.catch(() => this.databases.delete(name));
+    }
+    return db;
   }
 
   private map(name: string): MapRuntime {
     const rt = this.maps.get(name);
-    if (!rt) throw new ManagerError(404, `unknown map ${name}`);
+    if (!rt) throw new ServiceError(404, `unknown map ${name}`);
     return rt;
   }
 
@@ -181,7 +202,7 @@ export class Manager extends EventEmitter {
   }
 
   require(actor: Actor, perm: Permission): void {
-    if (!can(actor.role, perm)) throw new ManagerError(403, `${actor.name} (${actor.role}) lacks permission ${perm}`);
+    if (!can(actor.role, perm)) throw new ServiceError(403, `${actor.name} (${actor.role}) lacks permission ${perm}`);
   }
 
   // --- RCON ------------------------------------------------------------------------------------------------
@@ -284,7 +305,7 @@ export class Manager extends EventEmitter {
     }
     for (const [steamId, p] of [...rt.online]) {
       if (seen.has(steamId)) continue;
-      // after a restart of the manager we do not know when the player left: use the last heartbeat
+      // after a restart of the service we do not know when the player left: use the last heartbeat
       const ts = rt.firstPoll ? Math.min(now, Math.max(p.since, this.heartbeat)) : now;
       await this.playerLeft(rt, steamId, ts, 'leave');
     }
@@ -307,7 +328,7 @@ export class Manager extends EventEmitter {
   }
 
   private async mapEvent(rt: MapRuntime, type: 'map-online' | 'map-offline', text: string): Promise<void> {
-    await this.recordEvent({ ts: Date.now(), map: rt.cfg.name, type, text, source: 'manager' });
+    await this.recordEvent({ ts: Date.now(), map: rt.cfg.name, type, text, source: 'service' });
     this.route('map', `**${rt.cfg.name}**: ${text}`);
     await this.fireTriggers(type, { map: rt.cfg.name, text });
   }
@@ -397,7 +418,7 @@ export class Manager extends EventEmitter {
     });
     source.on('error', (err: Error) => this.emit('warning', `${rt.cfg.name} log: ${err.message}`));
     rt.log = source;
-    // first read now, so "start at the end of the file" refers to the moment the manager starts
+    // first read now, so "start at the end of the file" refers to the moment the service starts
     if (source instanceof GameLogFollower) await source.poll().catch((err) => this.emit('warning', `${rt.cfg.name} log: ${(err as Error).message}`));
     source.start();
   }
@@ -463,7 +484,7 @@ export class Manager extends EventEmitter {
     }
   }
 
-  /** BanPlayer/UnbanPlayer typed by an admin in the game also land in the ban list of the manager. */
+  /** BanPlayer/UnbanPlayer typed by an admin in the game also land in the ban list of the service. */
   private async importIngameBan(ev: LogEvent): Promise<void> {
     const m = /^(?:admincheat |cheat )?(BanPlayer|UnbanPlayer)\s+"?(\d{17})"?/i.exec(ev.detail ?? '');
     if (!m) return;
@@ -540,7 +561,7 @@ export class Manager extends EventEmitter {
   async broadcast(actor: Actor, targets: string[] | 'all', text: string): Promise<ExecResult[]> {
     this.require(actor, 'chat');
     const clean = toArkAscii(text.replace(/\s+/g, ' ').trim());
-    if (!clean) throw new ManagerError(400, 'empty message');
+    if (!clean) throw new ServiceError(400, 'empty message');
     const results: ExecResult[] = [];
     for (const rt of this.targets(targets)) {
       if (rt.status !== 'online' && targets === 'all') continue;
@@ -553,7 +574,7 @@ export class Manager extends EventEmitter {
   async messagePlayer(actor: Actor, steamId: string, text: string): Promise<ExecResult[]> {
     this.require(actor, 'chat');
     const maps = this.whereOnline(steamId);
-    if (!maps.length) throw new ManagerError(409, 'player is not online');
+    if (!maps.length) throw new ServiceError(409, 'player is not online');
     const clean = toArkAscii(text.replace(/\s+/g, ' ').trim());
     const results = await Promise.all(maps.map((m) => this.send(this.map(m), `ServerChatTo ${quoteArg(steamId)} ${clean}`)));
     await this.auditResults(actor, 'message', `ServerChatTo ${steamId} ${clean}`, results);
@@ -562,9 +583,9 @@ export class Manager extends EventEmitter {
 
   async kick(actor: Actor, steamId: string, reason = ''): Promise<ExecResult[]> {
     this.require(actor, 'kick');
-    if (!STEAM_ID.test(steamId)) throw new ManagerError(400, 'invalid SteamID');
+    if (!STEAM_ID.test(steamId)) throw new ServiceError(400, 'invalid SteamID');
     const maps = this.whereOnline(steamId);
-    if (!maps.length) throw new ManagerError(409, 'player is not online');
+    if (!maps.length) throw new ServiceError(409, 'player is not online');
     const results = await Promise.all(maps.map((m) => this.send(this.map(m), `KickPlayer ${steamId}`)));
     await this.auditResults(actor, 'kick', `KickPlayer ${steamId}`, results);
     if (reason) await this.store.addNote(steamId, actor.name, `Kick: ${reason}`, 'kick');
@@ -581,8 +602,8 @@ export class Manager extends EventEmitter {
   /** Cluster-wide ban: stored, sent as BanPlayer to every reachable map (they share and rewrite BanList.txt), kicked. */
   async ban(actor: Actor, b: { steamId: string; reason: string; minutes?: number | null; name?: string | null }): Promise<{ id: number; results: ExecResult[] }> {
     this.require(actor, 'ban');
-    if (!STEAM_ID.test(b.steamId)) throw new ManagerError(400, 'invalid SteamID (17 digits)');
-    if (!b.reason?.trim()) throw new ManagerError(400, 'a reason is required');
+    if (!STEAM_ID.test(b.steamId)) throw new ServiceError(400, 'invalid SteamID (17 digits)');
+    if (!b.reason?.trim()) throw new ServiceError(400, 'a reason is required');
     const expiresTs = b.minutes ? Date.now() + Math.round(b.minutes * 60_000) : null;
     const name = b.name ?? (await this.store.player(b.steamId))?.name ?? null;
     const id = await this.store.addBan({ steamId: b.steamId, name, reason: b.reason.trim(), by: actor.name, expiresTs });
@@ -602,7 +623,7 @@ export class Manager extends EventEmitter {
   async unban(actor: Actor, banId: number, reason: string): Promise<ExecResult[]> {
     this.require(actor, 'unban');
     const ban = await this.store.revokeBan(banId, actor.name, reason || 'aufgehoben');
-    if (!ban) throw new ManagerError(404, 'ban not found');
+    if (!ban) throw new ServiceError(404, 'ban not found');
     return this.liftNative(actor, ban, 'unban');
   }
 
@@ -627,12 +648,12 @@ export class Manager extends EventEmitter {
   private async enforceBan(rt: MapRuntime, steamId: string): Promise<void> {
     const res = await this.send(rt, `KickPlayer ${steamId}`);
     const name = rt.online.get(steamId)?.name ?? steamId;
-    await this.recordEvent({ ts: Date.now(), map: rt.cfg.name, type: 'ban-kick', steamId, name, text: `${name} ist gebannt und wurde gekickt`, source: 'manager' });
+    await this.recordEvent({ ts: Date.now(), map: rt.cfg.name, type: 'ban-kick', steamId, name, text: `${name} ist gebannt und wurde gekickt`, source: 'service' });
     await this.audit(SYSTEM, 'ban-kick', steamId, { map: rt.cfg.name, response: res.response, error: res.error }, res.ok ? 'ok' : 'error');
     await this.fireTriggers('ban-kick', { map: rt.cfg.name, player: { steamId, name } });
   }
 
-  /** A map that comes (back) online gets every active ban, so its ban list in memory matches the manager. */
+  /** A map that comes (back) online gets every active ban, so its ban list in memory matches the service. */
   private async resyncBans(rt: MapRuntime): Promise<void> {
     const bans = await this.store.activeBans();
     if (!bans.length || bans.length > 500) return;
@@ -643,16 +664,16 @@ export class Manager extends EventEmitter {
   async runSaved(actor: Actor, id: number, targets: string[] | 'all' | null, params: Record<string, string>): Promise<ExecResult[]> {
     this.require(actor, 'commands.run');
     const cmd = await this.store.item('mgr_commands', id);
-    if (!cmd) throw new ManagerError(404, 'saved command not found');
+    if (!cmd) throw new ServiceError(404, 'saved command not found');
     const need = (cmd.permission as Permission | null) ?? 'commands.run';
     this.require(actor, need);
     const defs = cmd.params ? JSON.parse(String(cmd.params)) as Array<{ name: string; type?: string; required?: boolean }> : [];
     const values: Record<string, string> = {};
     for (const d of defs) {
       const v = (params[d.name] ?? '').trim();
-      if (d.required !== false && !v) throw new ManagerError(400, `parameter ${d.name} missing`);
-      if (d.type === 'steamId' && v && !STEAM_ID.test(v)) throw new ManagerError(400, `parameter ${d.name}: invalid SteamID`);
-      if (d.type === 'number' && v && !/^-?\d+(\.\d+)?$/.test(v)) throw new ManagerError(400, `parameter ${d.name}: not a number`);
+      if (d.required !== false && !v) throw new ServiceError(400, `parameter ${d.name} missing`);
+      if (d.type === 'steamId' && v && !STEAM_ID.test(v)) throw new ServiceError(400, `parameter ${d.name}: invalid SteamID`);
+      if (d.type === 'number' && v && !/^-?\d+(\.\d+)?$/.test(v)) throw new ServiceError(400, `parameter ${d.name}: not a number`);
       values[`param.${d.name}`] = v;
     }
     const line = renderTemplate(String(cmd.template), values, true);
@@ -662,7 +683,7 @@ export class Manager extends EventEmitter {
     if (stored === 'player' || (Array.isArray(stored) && stored[0] === 'player')) {
       const sid = defs.find((d) => d.type === 'steamId');
       const where = sid ? this.whereOnline(values[`param.${sid.name}`]) : [];
-      if (!where.length) throw new ManagerError(409, 'player is not online on any map');
+      if (!where.length) throw new ServiceError(409, 'player is not online on any map');
       maps = where;
     } else {
       maps = targets ?? (Array.isArray(stored) && stored.length ? stored : 'all');
@@ -680,7 +701,7 @@ export class Manager extends EventEmitter {
   // --- notes -----------------------------------------------------------------------------------------------
   async addNote(actor: Actor, steamId: string, text: string, flag: string | null): Promise<number> {
     this.require(actor, 'notes');
-    if (!text.trim()) throw new ManagerError(400, 'empty note');
+    if (!text.trim()) throw new ServiceError(400, 'empty note');
     const id = await this.store.addNote(steamId, actor.name, text.trim(), flag);
     await this.audit(actor, 'note', steamId, { flag, text: text.slice(0, 200) }, 'ok');
     return id;
@@ -761,7 +782,7 @@ export class Manager extends EventEmitter {
   async runSchedule(actor: Actor, id: number): Promise<void> {
     this.require(actor, 'schedules.manage');
     const row = await this.store.item('mgr_schedules', id);
-    if (!row) throw new ManagerError(404, 'schedule not found');
+    if (!row) throw new ServiceError(404, 'schedule not found');
     await this.audit(actor, 'schedule-run', String(row.name), null, 'ok');
     const targets = row.targets ? JSON.parse(String(row.targets)) : 'all';
     const runner: Actor = { name: `schedule:${row.name}`, type: 'scheduler', role: 'admin' };

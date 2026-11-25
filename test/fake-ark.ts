@@ -4,7 +4,7 @@
 // a draining chat buffer and a ban list.
 import { createServer, type Server, type Socket } from 'node:net';
 import { appendFileSync } from 'node:fs';
-import { encodePacket, decodePackets, NO_RESPONSE } from '../src/manager/rcon.ts';
+import { encodePacket, decodePackets, NO_RESPONSE } from '../src/rcon/rcon.ts';
 
 export interface FakePlayer { name: string; steamId: string }
 

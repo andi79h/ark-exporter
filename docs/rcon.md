@@ -1,6 +1,6 @@
-# ark-manager: RCON-Verwaltung für ARK-Server
+# ark-rcon: RCON-Verwaltung für ARK-Server
 
-`ark-manager` hält zu jeder Karte eines ARK-Clusters eine RCON-Verbindung. Er sammelt Spieler, Chat und Spiellog in einer Datenbank. Bedient wird er über eine Weboberfläche mit Rollen und eine JSON-API. Er ist als selbst gehosteter Ersatz für bezahlte RCON-Dienste wie BattleMetrics gebaut, und zwar für **ARK: Survival Evolved unter Linux mit arkmanager**. Gemessen und getestet ist er an Build 358.24.
+`ark-rcon` hält zu jeder Karte eines ARK-Clusters eine RCON-Verbindung. Er sammelt Spieler, Chat und Spiellog in einer Datenbank. Bedient wird er über eine Weboberfläche mit Rollen und eine JSON-API. Er ist als selbst gehosteter Ersatz für bezahlte RCON-Dienste wie BattleMetrics gebaut, und zwar für **ARK: Survival Evolved unter Linux mit arkmanager**. Gemessen und getestet ist er an Build 358.24.
 
 ## Inhalt
 
@@ -22,7 +22,7 @@
 | **Dashboard** | eine Kachel je Karte mit Status, Spielern online, Live-Feed (Chat, Joins, Spiellog) und eigener Konsole. „An alle“ schickt einen Befehl oder eine Chatnachricht an alle Karten. |
 | **Spieler** | Profil je SteamID: alle Namen, Charaktername, ARK-Spieler-ID (aus Admin-Logzeilen), erster und letzter Besuch, Sitzungen mit Dauer, Spielzeit, Chatverlauf, Banns, Notizen mit Markierung. Suche über Name, Charakter, SteamID oder ARK-ID. |
 | **Aktivität** | Chat, Server-Chat, Join/Leave, Admin-Befehle im Spiel (mit SteamID), Stammes-Logs, Zähmungen, Mod-Meldungen, Kartenstatus. Filter nach Karte, Art und Text, live. |
-| **Banns** | clusterweit, mit Grund und optionalem Ablauf. `BanPlayer` geht an jede erreichbare Karte. Gebannte Spieler werden beim Betreten gekickt, Zeitbanns laufen von selbst ab. Banns, die ein Admin im Spiel setzt, übernimmt der Manager. Import einer `BanList.txt`. |
+| **Banns** | clusterweit, mit Grund und optionalem Ablauf. `BanPlayer` geht an jede erreichbare Karte. Gebannte Spieler werden beim Betreten gekickt, Zeitbanns laufen von selbst ab. Banns, die ein Admin im Spiel setzt, übernimmt der Dienst. Import einer `BanList.txt`. |
 | **Konsole** | Befehle an eine, mehrere oder alle Karten, jeweils durch die [Sicherheitsprüfung](#sicherheitsregeln-für-rcon). |
 | **Gespeicherte Befehle** | Vorlagen mit Parametern (Text, SteamID, Zahl), mit eigenem Recht. Ziel ist eine feste Karte, alle Karten oder die Karte, auf der der Spieler gerade ist. Damit dürfen Moderatoren geprüfte Befehle ausführen, ohne die Konsole zu haben. |
 | **Zeitpläne** | Cron mit fünf Feldern und Zeitzone, Vorwarnungen per ServerChat (z. B. 10 und 1 Minute vor einem Neustart). |
@@ -33,20 +33,20 @@
 
 ## Wie er Chat und Log liest
 
-ASE schreibt mit `-servergamelog` jede Zeile des Spiellogs auch in `ShooterGame/Saved/Logs/ServerGame.<pid>.<Datum>.log`. Darin stehen dieselben Zeilen, die `GetGameLog` über RCON liefert, also auch Chat und Joins. Der Manager liest **diese Datei**. Das hat vier Gründe:
+ASE schreibt mit `-servergamelog` jede Zeile des Spiellogs auch in `ShooterGame/Saved/Logs/ServerGame.<pid>.<Datum>.log`. Darin stehen dieselben Zeilen, die `GetGameLog` über RCON liefert, also auch Chat und Joins. Der Dienst liest **diese Datei**. Das hat vier Gründe:
 
-- `GetChat` und `GetGameLog` leeren einen Puffer, den sich alle RCON-Clients teilen. Liest ein zweites Werkzeug mit, fehlen dem ersten die Zeilen. Die Datei lässt sich lesen, ohne jemandem etwas wegzunehmen. Deshalb kann der Manager parallel zu BattleMetrics laufen.
-- RCON liefert Namen und Chat nur als ASCII, jedes andere Zeichen wird zu `?`. Die Datei ist UTF-8, Umlaute bleiben also erhalten. Spielernamen aus `ListPlayers` (`J?rg`) repariert der Manager mit dem Namen aus der Logzeile (`Jörg`).
-- Die Leseposition wird gespeichert. Nach einem Neustart des Managers geht keine Zeile verloren.
+- `GetChat` und `GetGameLog` leeren einen Puffer, den sich alle RCON-Clients teilen. Liest ein zweites Werkzeug mit, fehlen dem ersten die Zeilen. Die Datei lässt sich lesen, ohne jemandem etwas wegzunehmen. Deshalb kann der Dienst parallel zu BattleMetrics laufen.
+- RCON liefert Namen und Chat nur als ASCII, jedes andere Zeichen wird zu `?`. Die Datei ist UTF-8, Umlaute bleiben also erhalten. Spielernamen aus `ListPlayers` (`J?rg`) repariert der Dienst mit dem Namen aus der Logzeile (`Jörg`).
+- Die Leseposition wird gespeichert. Nach einem Neustart des Dienstes geht keine Zeile verloren.
 - Admin-Befehle im Spiel stehen mit Spielername, ARK-ID und SteamID in der Datei.
 
-Wer `ListPlayers` abfragt, stört andere Clients nicht. Der Manager fragt alle 10 s (`pollSeconds`). Daraus entstehen Sitzungen und Spielerprofile, denn nur `ListPlayers` liefert die SteamID.
+Wer `ListPlayers` abfragt, stört andere Clients nicht. Der Dienst fragt alle 10 s (`pollSeconds`). Daraus entstehen Sitzungen und Spielerprofile, denn nur `ListPlayers` liefert die SteamID.
 
 Liegen die Logdateien auf einem anderen Rechner, kann ein Befehl sie liefern (`logCommand`). Ein Beispiel dafür ist `scripts/follow-gamelog.sh` über ssh. Ohne Datei geht es mit `logSource: "rcon"` auch über `GetGameLog`, aber nur, wenn sonst niemand den Puffer liest.
 
 ## Sicherheitsregeln für RCON
 
-Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabei verweist `MyPC` auf den GameMode statt auf einen PlayerController. Viele Admin-Befehle tun deshalb über RCON nichts, manche bringen den Server zum Absturz. Der Manager prüft jeden Befehl, bevor er ihn sendet. Die Regeln stehen in `src/manager/policy.ts`, die Tabelle in `src/manager/ase-358-commands.ts`. Die Tabelle stammt aus einer statischen Analyse der Server-Binary 358.24 mit 317 Befehlen, ergänzt um Tests auf einem Testserver.
+Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabei verweist `MyPC` auf den GameMode statt auf einen PlayerController. Viele Admin-Befehle tun deshalb über RCON nichts, manche bringen den Server zum Absturz. Der Dienst prüft jeden Befehl, bevor er ihn sendet. Die Regeln stehen in `src/rcon/policy.ts`, die Tabelle in `src/rcon/ase-358-commands.ts`. Die Tabelle stammt aus einer statischen Analyse der Server-Binary 358.24 mit 317 Befehlen, ergänzt um Tests auf einem Testserver.
 
 | Regel | Grund |
 |---|---|
@@ -62,7 +62,7 @@ Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabe
 | Befehle mit großer Wirkung (`DoExit`, `DestroyWildDinos` …): Recht `console.risky` | |
 | Laut Analyse lauffähige, aber ungetestete Befehle: nur `superadmin`, auf Live-Karten zusätzlich mit `force`; in Triggern und Zeitplänen nie | |
 
-Textparameter, die nicht am Ende stehen, müssen in Anführungszeichen: `ServerChatTo "<SteamID>" Text`. Spielerbefehle wie `GiveItemToPlayer` verlangen die ARK-Spieler-ID, nicht die SteamID. Der Manager kennt sie aus den Admin-Logzeilen, sonst steht sie in jedem Save an der Spielerfigur (`LinkedPlayerDataID`). `GiveItemToPlayer` gilt als getestet: Mit dem Empfänger online auf derselben Karte kommt das Item an und der Server läuft weiter. Ist der Spieler dort nicht online, passiert still nichts, eine Rückmeldung gibt es in keinem Fall.
+Textparameter, die nicht am Ende stehen, müssen in Anführungszeichen: `ServerChatTo "<SteamID>" Text`. Spielerbefehle wie `GiveItemToPlayer` verlangen die ARK-Spieler-ID, nicht die SteamID. Der Dienst kennt sie aus den Admin-Logzeilen, sonst steht sie in jedem Save an der Spielerfigur (`LinkedPlayerDataID`). `GiveItemToPlayer` gilt als getestet: Mit dem Empfänger online auf derselben Karte kommt das Item an und der Server läuft weiter. Ist der Spieler dort nicht online, passiert still nichts, eine Rückmeldung gibt es in keinem Fall.
 
 Andere Builds (ASA, neuere ASE-Versionen) haben keine geprüfte Tabelle. Für sie gilt die Tabelle von 358.24 nur als Annahme.
 
@@ -71,20 +71,20 @@ Andere Builds (ASA, neuere ASE-Versionen) haben keine geprüfte Tabelle. Für si
 Voraussetzung ist Node ≥ 22.18 oder Bun; der Code ist TypeScript ohne Build-Schritt. Auf Systemen mit alter glibc, etwa Ubuntu 18.04, läuft der Node-Build `linux-x64-glibc-217` von unofficial-builds.nodejs.org.
 
 ```bash
-git clone https://github.com/andi79h/ark-exporter.git /opt/ark-manager
-cd /opt/ark-manager && npm ci --omit=dev        # nur mysql2, und nur nötig für MySQL
-mkdir -p /etc/ark-manager && cp docs/ark-manager.example.json /etc/ark-manager/config.json
-bin/ark-manager maps --config /etc/ark-manager/config.json          # zeigt, welche Karten erkannt werden
-bin/ark-manager user add admin --role superadmin --config /etc/ark-manager/config.json
-bin/ark-manager run --config /etc/ark-manager/config.json
+git clone https://github.com/andi79h/ark-exporter.git /opt/ark-rcon
+cd /opt/ark-rcon && npm ci --omit=dev        # nur mysql2, und nur nötig für MySQL
+mkdir -p /etc/ark-rcon && cp docs/ark-rcon.example.json /etc/ark-rcon/config.json
+bin/ark-rcon maps --config /etc/ark-rcon/config.json          # zeigt, welche Karten erkannt werden
+bin/ark-rcon user add admin --role superadmin --config /etc/ark-rcon/config.json
+bin/ark-rcon run --config /etc/ark-rcon/config.json
 ```
 
-Der Manager muss unter dem Benutzer laufen, der die Server betreibt (z. B. `steam`). Nur dieser darf die arkmanager-Dateien und die Logdateien (Modus 0600) lesen. Eine systemd-Unit:
+Der Dienst muss unter dem Benutzer laufen, der die Server betreibt (z. B. `steam`). Nur dieser darf die arkmanager-Dateien und die Logdateien (Modus 0600) lesen. Eine systemd-Unit:
 
 ```ini
 [Service]
 User=steam
-ExecStart=/usr/bin/node /opt/ark-manager/src/manager/cli.ts run --config /etc/ark-manager/config.json
+ExecStart=/usr/bin/node /opt/ark-rcon/src/rcon/cli.ts run --config /etc/ark-rcon/config.json
 Restart=always
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -96,13 +96,13 @@ Die Weboberfläche lauscht standardmäßig nur auf `127.0.0.1:8790`. Für den Zu
 - einen Reverse-Proxy mit TLS; dann `secureCookies: true`, und `trustProxy: true`, damit die Sperre nach Fehlversuchen die echte Adresse sieht. Für den Live-Feed (Server-Sent Events) darf der Proxy nicht puffern.
 - einen SSH-Tunnel: `ssh -L 8790:127.0.0.1:8790 server`
 
-Läuft der Manager auf demselben Rechner wie die Server, sollten die RCON-Ports nach außen geschlossen sein.
+Läuft der Dienst auf demselben Rechner wie die Server, sollten die RCON-Ports nach außen geschlossen sein.
 
 ## Konfiguration
 
 ```json
 {
-  "database": "@/etc/ark-manager/db.url",
+  "database": "@/etc/ark-rcon/db.url",
   "arkmanager": {
     "instances": "/etc/arkmanager/instances",
     "exclude": ["update-master", "test-*"],
@@ -115,11 +115,12 @@ Läuft der Manager auf demselben Rechner wie die Server, sollten die RCON-Ports 
   "pollSeconds": 10,
   "web": { "listen": "127.0.0.1:8790", "secureCookies": false, "trustProxy": false },
   "discord": {
-    "webhooks": { "chat": "@/etc/ark-manager/discord-chat.url", "admin": "@/etc/ark-manager/discord-admin.url" },
+    "webhooks": { "chat": "@/etc/ark-rcon/discord-chat.url", "admin": "@/etc/ark-rcon/discord-admin.url" },
     "routes": { "chat": "chat", "join": "chat", "leave": "chat", "ban": "admin", "audit": "admin", "admin": "admin", "map": "admin" }
   },
   "scriptCommands": ["TCsAR", "SpawnDino_DS"],
   "hooks": ["hooks/site.ts"],
+  "databases": { "site": "@/etc/ark-rcon/site-db.url" },
   "retentionDays": 0
 }
 ```
@@ -129,14 +130,15 @@ Läuft der Manager auf demselben Rechner wie die Server, sollten die RCON-Ports 
 
 **Karten**
 - `arkmanager`: liest die Instanzdateien. Daraus kommen Port, Passwort (`ark_ServerAdminPassword`), Sitzungsname und `arkserverroot` (für den Logordner). Ausgelassen werden Instanzen ohne RCON und solche mit `arkUpdateOnly="true"`. `include`/`exclude` erlauben `*` am Ende.
-- Nach einem Passwortwechsel in der Instanzdatei übernimmt der Manager das neue Passwort selbst, sobald die Karte es ablehnt.
+- Nach einem Passwortwechsel in der Instanzdatei übernimmt der Dienst das neue Passwort selbst, sobald die Karte es ablehnt.
 - `maps`: Karten von Hand oder Ergänzungen zu erkannten Karten. Das Passwort kommt aus `password`, `passwordFile` oder `passwordEnv`.
 - `role`: `live` oder `test`. Auf Test-Karten darf ein superadmin ungetestete Befehle ohne `force` senden.
 - `externalBufferReader`: `true`, solange ein anderes Programm `GetChat`/`GetGameLog` liest. Bei Live-Karten ist das die Vorgabe.
 - `logSource`: `file` (Standard, wenn ein Logordner bekannt ist), `rcon` oder `none`.
 
 **Sonstiges**
-- `hooks`: Module, die beim Start geladen werden (`export default function (manager) {}`). Sie hören auf Ereignisse (`poll`, `event`, `player`, `status`, `audit`) und können über `manager.store.db` in eigene Tabellen schreiben. Damit lassen sich bestehende Webseiten-Tabellen weiter befüllen.
+- `hooks`: Module, die beim Start geladen werden (`export default function (service) {}`). Sie hören auf Ereignisse (`poll`, `event`, `player`, `status`, `audit`) und können über `service.store.db` in eigene Tabellen schreiben.
+- `databases`: weitere Datenbanken für Hooks, je mit einem Namen und in derselben Form wie `database`. Ein Hook holt sie mit `await service.database('site')`. Die Verbindung wird beim ersten Aufruf geöffnet und mit dem Dienst geschlossen. Damit kann ein Hook bestehende Webseiten-Tabellen in deren eigener Datenbank weiter befüllen, während die Tabellen von ark-rcon in einer eigenen Datenbank liegen.
 - `retentionDays`: Chat und Log nach so vielen Tagen löschen; `0` heißt nie.
 
 ## Rollen
@@ -166,9 +168,9 @@ Aktionen sind eine JSON-Liste. Beispiele:
 
 ## API
 
-Jeder Aufruf außer `/api/login` braucht eine Anmeldung, entweder per Sitzungs-Cookie oder per `Authorization: Bearer <Token>`. Bei Cookie-Anmeldung brauchen ändernde Aufrufe zusätzlich den Header `X-ARKM: 1` (Schutz gegen Cross-Site-Requests). Die Rechte sind dieselben wie in der Oberfläche.
+Jeder Aufruf außer `/api/login` braucht eine Anmeldung, entweder per Sitzungs-Cookie oder per `Authorization: Bearer <Token>`. Bei Cookie-Anmeldung brauchen ändernde Aufrufe zusätzlich den Header `X-Ark-Rcon: 1` (Schutz gegen Cross-Site-Requests). Die Rechte sind dieselben wie in der Oberfläche.
 
-Ein Portal, das mit einem eigenen Token für seine angemeldeten Benutzer handelt, schickt `X-ARKM-On-Behalf-Of: <Name>` mit. Im Audit-Log steht dann `<Token-Benutzer>:<Name>`. Es gelten die Rechte des Token-Benutzers.
+Ein Portal, das mit einem eigenen Token für seine angemeldeten Benutzer handelt, schickt `X-Ark-Rcon-On-Behalf-Of: <Name>` mit. Im Audit-Log steht dann `<Token-Benutzer>:<Name>`. Es gelten die Rechte des Token-Benutzers.
 
 **Abfragen (GET)**
 
@@ -197,7 +199,7 @@ Dazu kommen CRUD-Pfade für `/api/commands`, `/api/schedules`, `/api/triggers` u
 
 ## Datenbank
 
-Alle Tabellen beginnen mit `mgr_` und passen damit in eine bestehende Datenbank. Der Manager legt sie beim Start an.
+Alle Tabellen beginnen mit `mgr_` und passen damit auch in eine bestehende Datenbank. Empfohlen ist eine eigene Datenbank, z. B. `ark_rcon`: Der Dienst braucht das Recht, Tabellen anzulegen, und das lässt sich in MySQL am einfachsten je Datenbank vergeben. Der Dienst legt seine Tabellen beim Start an.
 
 | Tabellen | Inhalt |
 |---|---|
@@ -214,8 +216,8 @@ Zeitstempel sind Millisekunden UTC.
 ## Entwicklung und Tests
 
 ```bash
-node --test test/manager.test.ts                 # RCON-Attrappe mit dem Verhalten von ASE 358.24, SQLite
-ARK_EXPORT_TEST_MYSQL=mysql://root:pw@127.0.0.1:3306/mysql node --test test/manager.test.ts   # zusätzlich MySQL
+node --test test/rcon.test.ts                    # RCON-Attrappe mit dem Verhalten von ASE 358.24, SQLite
+ARK_EXPORT_TEST_MYSQL=mysql://root:pw@127.0.0.1:3306/mysql node --test test/rcon.test.ts   # zusätzlich MySQL
 node test/demo.ts 8790                           # Vorführung: drei Attrappen-Karten mit Spielern und Chat, Anmeldung demo / demo-password
 ```
 

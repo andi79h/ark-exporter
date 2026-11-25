@@ -1,4 +1,4 @@
-// Which commands the manager sends over RCON. Rules (ASE 358.24, from binary analysis and tests on a test server):
+// Which commands the service sends over RCON. Rules (ASE 358.24, from binary analysis and tests on a test server):
 // - only commands that work over RCON and are no crash candidate
 // - never GetTribeIdPlayerList (crashes the server)
 // - no "cheat"/"admincheat" prefix (the server ignores the command then), no "|" chains (only the first part runs)
