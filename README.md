@@ -17,6 +17,7 @@ Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**.
 | ARK: Survival Evolved, Save-Version 10–11 (neuere Spielstände) | teilweise: Welt und Eigenschaften wie bei 9; die angehängten Blöcke mit Stämmen, Spielern und Kryo-Speicher werden noch nicht gelesen und in `inspect` als „unaccounted“ gezählt; ohne Beispiel-Save ungetestet |
 | ARK: Survival Evolved, Save-Version 12 | noch nicht |
 | ARK: Survival Ascended (ASA), Save-Version 13–16 | `inspect` liest Welt-Save, Kryokapseln, `.arkprofile` und `.arktribe` und misst die Abdeckung; an 13 Karten eines Community-Clusters (Save-Version 16, 2,25 GB Nutzdaten) geprüft: 99,9999 % strukturiert gelesen (1,8 KB offen), alle 54.202 Kryokapseln und 19 Bauvorlagen vollständig, Profile und Stämme zu 100 %. Snapshot und Verlauf folgen |
+| ASE-Cluster-Dateien (`clusters/<ClusterId>/<SteamID>`) | lesen und byte-genau zurückschreiben, Items anhängen (`ark-export cluster`, siehe [Cluster-Dateien](#cluster-dateien)) |
 
 ASA speichert ganz anders als ASE:
 - **Speicherform:** Die `.ark` ist selbst eine SQLite-Datenbank. Jedes Objekt liegt als Binärblock unter einer echten 16-Byte-UUID in der Tabelle `game`.
@@ -67,7 +68,7 @@ Gemessen an einem `Gen2.ark` eines Community-Servers (816 MB, 2,19 Mio. Objekte)
 
 `ark-export inspect` zeigt die Abdeckung jeder Datei (Abschnitte, Rohbytes, Auffälligkeiten). Sie steht außerdem in der `meta`-Tabelle jedes Snapshots. Unbekanntes bricht den Lauf nicht ab: Es wird roh aufbewahrt und gezählt.
 
-Nicht dabei sind die Cluster-Dateien (Uploads zwischen Karten).
+Nicht im Snapshot sind die Cluster-Dateien (Uploads zwischen Karten); sie liest und schreibt `ark-export cluster`, siehe [Cluster-Dateien](#cluster-dateien).
 
 ## Stabile Schlüssel
 
@@ -226,11 +227,56 @@ ark-export sync --out DIR [--exclude A,B] <SavedArks-Ordner | Map.ark>...
 ark-export mysql --out DIR [--name N] --mysql URL   neuesten Stand und Verlauf nach MySQL übertragen
 ark-export query <datei.sqlite> <SQL> [Parameter]   Zeilen als JSON Lines
 ark-export compare <alt.sqlite> <neu.sqlite>        welche Felder sich ändern
+ark-export cluster show|check|add-item ...          Cluster-Dateien, siehe unten
 ```
 
 - **`sync` und der Save:** `sync` nimmt pro `SavedArks`-Ordner den neuesten `.ark` (keine Zeitstempel-Sicherungen). Saves, die jünger als `--min-age` Sekunden sind, lässt es aus. Es läuft nie doppelt (Sperrdatei im Export-Ordner).
 - **Name:** Der Name ist der Ordner über `ShooterGame` (`…/<name>/ShooterGame/Saved/SavedArks/…`), sonst der Kartenname.
 - **Profile und Stämme:** Sie kommen aus demselben Ordner wie der Save.
+
+## Cluster-Dateien
+
+Was Spieler an Obelisk, Terminal oder Transmitter hochladen, legt der Server pro Spieler in `clusters/<ClusterId>/<SteamID>` ab. Jeder Server des Clusters liest dieselbe Datei. Spieler ohne Uploads haben eine Datei mit 0 Byte.
+
+**Aufbau.** Die Datei ist ein Container wie `.arkprofile`, aber mit Version 4: `04000000 01000000`, ein Objekt `ArkCloudInventoryData`, dann dessen Eigenschaften. Die Eigenschaft `MyArkData` (Struct `ArkInventoryData`) enthält bis zu drei Arrays; leere Arrays fehlen:
+
+| Array | ein Eintrag |
+|---|---|
+| `ArkItems` | `ArkTributeItem` (Struct `ItemNetInfo`, 95 Felder), `Version` (Float 2.0), `UploadTime` (Int32, Unix-Sekunden) |
+| `ArkTamedDinosData` | `DinoClassName`, `DinoClass`, `DinoData` (Bytes: eingebettetes Archiv wie in Kryokapseln), `DinoName`, `DinoStats[0..11]` (Text), `DinoID1/2`, `UploadTime` … |
+| `ArkPlayerData` | `PlayerDataID`, `PlayerDataBytes` (Bytes: eingebettetes Archiv), `PlayerName`, `PlayerStats[0..11]`, `UploadingServerMapName`, `UploadTime` … |
+
+Wichtige Felder in `ItemNetInfo`:
+- `ItemArchetype`: Klasse als `BlueprintGeneratedClass /Game/…/X.X_C`.
+- `ItemId`: `ItemID1`, `ItemID2` (je UInt32). In allen untersuchten Dateien kleiner als 10⁹; das Spiel erzeugt sie offenbar als Zufalls-Float × 10⁹.
+- `ItemStatValues[0..7]` (UInt16): allgemeine Qualität, Rüstung, Haltbarkeit (Maximum), Schaden, Munition, Kälteschutz, Gewicht, Hitzeschutz. Die Werte im Spiel ergeben sich daraus mit den Faktoren der jeweiligen Item-Klasse.
+- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen), `ItemRating` (Float), `ItemDurability` (Float, aktuelle Haltbarkeit).
+- `ItemQuantity` (UInt32): **Anzahl − 1.** Einzelne Items und Blaupausen haben 0, ein voller 100er-Stapel hat 99, ein voller 50er-Stapel 49. Im Spieltest am 20.11.2026 kamen bei `ItemQuantity` 100 genau 101 Stück an. `cluster show` meldet deshalb `quantity` (Anzahl, also `ItemQuantity` + 1) und daneben `quantityRaw` (gespeicherter Wert).
+- `bAllowRemovalFromInventory` (Bool): **muss `true` sein, sonst lässt ARK das Item nicht herunterladen.** Im Spieltest ließen sich `add-item`-Items mit `false` weder per Doppelklick noch per T herunterladen. In derselben Datei gingen Items mit `true` problemlos. In echten Uploads steht das Flag gemischt, bei Blaupausen fast immer `false`. `cluster show` meldet es als `allowRemoval`.
+- `ExpirationTimeUTC` (UInt32, Unix-Sekunden). In allen untersuchten Dateien genau `UploadTime + 86400`.
+- `OwnerPlayerDataID` (UInt64): die `PlayerDataID` des Spielers, der hochgeladen hat.
+
+**Lesen und Schreiben.** `src/tree.ts` liest Eigenschaften verlustfrei: Typ, Index, Reihenfolge und Kodierung bleiben erhalten. Werte, die der Schreiber anders kodieren würde, behalten ihre Original-Bytes, solange sie unverändert bleiben; das sind Texte in ungewöhnlicher Kodierung oder NaN mit Nutzlast. Unbekannte Teile bleiben Rohbytes. Dadurch wird jede Datei byte-genau zurückgeschrieben. `cluster check` prüft das für ganze Ordner, auch für die eingebetteten Tier- und Charakterarchive. Der Befehl schreibt nichts.
+
+```
+ark-export cluster show <datei> [--full]           Items, Tiere, Charaktere als JSON
+ark-export cluster check <datei | ordner>...       jede Datei lesen und zurückschreiben, Abweichungen melden
+ark-export cluster add-item <datei> --blueprint BP (--out DATEI | --in-place --backup ORDNER) [Optionen]
+```
+
+Beispiel: ein aufgestiegenes Krawallhemd mit freien Werten, eine Woche abholbar, als neue Datei:
+
+```bash
+bin/ark-export cluster add-item 7656119xxxxxxxxxx \
+  --blueprint "Blueprint'/Game/PrimalEarth/CoreBlueprints/Items/Armor/Riot/PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt'" \
+  --stats 0,30000,30000 --quality 5 --rating 15 --durability 1000 --expires-in 604800 \
+  --custom-name "Treuebonus" --out /tmp/neu
+```
+
+- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. `OwnerPlayerDataID` kommt aus dem hochgeladenen Charakter oder den vorhandenen Items. `--quantity` ist die Anzahl im Spiel (mindestens 1); geschrieben wird `ItemQuantity` = Anzahl − 1, also `--quantity 100` → 99. `bAllowRemovalFromInventory` ist immer `true`, auch bei `--blueprint-copy`; `--disallow-removal` schreibt `false`, nur für Tests. Ohne Angabe gilt: 1 Stück, Ablauf nach 86 400 s. Leere Dateien bekommen die vollständige Struktur.
+- **Prüfung:** Vor dem Schreiben wird das Ergebnis neu gelesen. Danach muss es ein Item mehr haben und sich selbst byte-genau zurückschreiben lassen. Lässt sich schon die Eingabe nicht byte-genau zurückschreiben, bricht der Befehl ab.
+- **`--in-place`:** Sichert das Original zuerst nach `--backup`. Dann schreibt der Befehl eine temporäre Datei daneben und ersetzt die Datei per `rename`. Rechte, Besitzer und Gruppe bleiben erhalten. Hat jemand die Datei seit dem Lesen geändert, etwa der Spielserver, wird nichts ersetzt.
+- **Noch ungeklärt:** Ob der Server eingeschleuste Items so annimmt, ist im Spiel noch nicht getestet. Ebenso offen ist, ob er `ExpirationTimeUTC` oder `TributeItemExpirationSeconds` ab `UploadTime` beachtet und was bei sehr hohen Werten passiert. Siehe [Offen](#offen).
 
 ## Laufzeit und Speicher
 
@@ -280,11 +326,12 @@ ARK_EXPORT_TEST_MYSQL=mysql://root:pw@127.0.0.1:3306/mysql npm test   # mit MySQ
 Die Tests bauen kleine künstliche Saves (`test/build.ts`, `test/fixtures.ts`). Im Repo liegen keine echten Spielstände.
 
 Aufbau:
-- `src/archive.ts`, `properties.ts`, `objects.ts`: Binärformat
-- `savegame.ts`, `container.ts`: Dateitypen
+- `src/archive.ts`, `properties.ts`, `objects.ts`: Binärformat (lesen)
+- `tree.ts`, `writer.ts`: verlustfreier Eigenschaftenbaum und Schreiber
+- `savegame.ts`, `container.ts`, `cluster.ts`: Dateitypen
 - `normalize.ts`: Schlüssel, Verweise, flüchtige Felder
 - `snapshot.ts`, `history.ts`: Datenbanken
-- `cli.ts`: Befehle
+- `cli.ts`, `cluster-cli.ts`: Befehle
 
 ## Offen
 
@@ -294,6 +341,13 @@ Aufbau:
 - Verlauf schneller machen: ein Durchlauf über beide nach Schlüssel sortierten Snapshots statt mehrerer SQL-Joins.
 - Räumlicher Index (SQLite R*Tree) für Suchen nach Bewegungsmustern.
 - ARK: Survival Ascended (anderes Save-Format).
+- Cluster-Dateien, nur im Spiel auf einem Testcluster zu klären:
+  - Wird ein angehängtes Item am Obelisken angezeigt und lässt es sich herunterladen?
+  - Welche Zeit zählt beim Ablauf: `ExpirationTimeUTC` oder `UploadTime` + `TributeItemExpirationSeconds`? Und was bewirken 0 oder 4294967295?
+  - Hochgeladene Blaupausen haben zusätzlich alle `bIsEngram` und fast immer `bAllowRemovalFromInventory` = `false`. `--blueprint-copy` setzt dagegen nur `bIsBlueprint` und `bAllowRemovalFromInventory` = `true`. Lässt sich so eine Blaupause herunterladen? (Geklärt sind `ItemQuantity` = Anzahl − 1 und `bAllowRemovalFromInventory` = `true` bei anderen Items, siehe oben.)
+  - Wird `ItemDurability` auf das Maximum aus `ItemStatValues[2]` begrenzt, wird `ItemRating` neu berechnet, und was gilt für sehr hohe Werte (65535)?
+  - Spielt `OwnerPlayerDataID` beim Herunterladen eine Rolle?
+  - Wann liest und schreibt der Server die Datei? Kann er eine gerade eingespielte Änderung mit einem älteren Stand überschreiben, etwa wenn der Spieler gleichzeitig hochlädt?
 
 ## Quellen und Lizenz
 

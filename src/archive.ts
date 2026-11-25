@@ -50,9 +50,11 @@ export class Archive {
   i64(): string { this.need(8); const v = this.dv.getBigInt64(this.pos, true); this.pos += 8; return v.toString(); }
   u64(): string { this.need(8); const v = this.dv.getBigUint64(this.pos, true); this.pos += 8; return v.toString(); }
   i64n(): bigint { this.need(8); const v = this.dv.getBigInt64(this.pos, true); this.pos += 8; return v; }
+  u64n(): bigint { this.need(8); const v = this.dv.getBigUint64(this.pos, true); this.pos += 8; return v; }
   f32raw(): number { this.need(4); const v = this.dv.getFloat32(this.pos, true); this.pos += 4; return v; }
   f32(): number | string { return float32(this.f32raw()); }
-  f64(): number | string { this.need(8); const v = this.dv.getFloat64(this.pos, true); this.pos += 8; return float64(v); }
+  f64raw(): number { this.need(8); const v = this.dv.getFloat64(this.pos, true); this.pos += 8; return v; }
+  f64(): number | string { return float64(this.f64raw()); }
   bool(): boolean { return this.i32() !== 0; }
 
   bytes(n: number): Buffer {
