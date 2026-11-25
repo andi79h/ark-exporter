@@ -13,10 +13,12 @@
 // UploadTime and the listing fields from the source entry or derived from the archive.
 // copyItem copies an ArkItems entry (e.g. a filled soul or cryopod) with a new ItemID, upload time,
 // expiry and owner and gives the creatures inside new DinoIDs as well.
+// recolorDino sets the colour regions of an uploaded creature in place (colors.ts).
 import { randomInt } from 'node:crypto';
 import {
   clusterData, clusterEntries, createClusterTree, DEFAULT_EXPIRES_IN, defaultOwner, itemIds, randomItemId,
 } from './cluster.ts';
+import { colorName, isKnownColor, REGIONS, storedColorSetName } from './colors.ts';
 import { readSave } from './savegame.ts';
 import {
   cloneProperty, findProperty, type Property, readContainerTree, type TreeContainer, type TreeObject, writeContainerTree,
@@ -75,6 +77,13 @@ export interface CreatureInfo {
   owningPlayer: string | null;
   imprinter: string | null;
   mutations: number;
+  /** ColorSetIndices 0..5, 0 = region unused (see colors.ts). */
+  colors: number[];
+}
+
+/** ColorSetIndices 0..5 of a creature; regions without the property are 0. */
+export function creatureColors(a: CreatureArchive): number[] {
+  return Array.from({ length: REGIONS }, (_, i) => num(a.creature.props, 'ColorSetIndices', i) ?? 0);
 }
 
 export function creatureInfo(a: CreatureArchive): CreatureInfo {
@@ -93,6 +102,7 @@ export function creatureInfo(a: CreatureArchive): CreatureInfo {
     owningPlayer: text(c, 'OwningPlayerName'),
     imprinter: text(c, 'ImprinterName'),
     mutations: (num(c, 'RandomMutationsFemale') ?? 0) + (num(c, 'RandomMutationsMale') ?? 0),
+    colors: creatureColors(a),
   };
 }
 
@@ -453,6 +463,119 @@ export function addDino(
     },
   };
 }
+
+// ---------------------------------------------------------------- recolouring uploads
+
+export interface Recolor {
+  /** Colour ID per region (0..5); regions left out keep their colour. 0 makes a region unused. */
+  colors: Record<number, number>;
+  /** ColorSetNames: 'game' (default) writes them the way the game does, 'keep' leaves them as they are. */
+  names?: 'game' | 'keep';
+  /** Allow IDs other than 0, 1..100 and 201..226 (any byte). */
+  anyColor?: boolean;
+}
+
+export interface Recolored {
+  index: number;
+  dinoId: [number, number];
+  cls: string;
+  before: number[];
+  after: number[];
+  /** Regions whose ColorSetNames entry was rewritten. */
+  names: number[];
+}
+
+/**
+ * Sets the colours of an uploaded creature (ArkTamedDinosData) in its DinoData archive. Only
+ * ColorSetIndices (and with names 'game' the matching ColorSetNames) change; DinoIDs, upload time and
+ * every other byte stay. The game spawns the creature from this archive on download. The tree passed in
+ * is changed.
+ */
+export function recolorDino(
+  c: TreeContainer, which: { index?: number; dinoId?: [number, number] }, r: Recolor,
+): { tree: TreeContainer; recolored: Recolored } {
+  const entries = clusterEntries(c, 'ArkTamedDinosData');
+  let index: number;
+  if (which.index !== undefined) {
+    if (!entries[which.index]) throw new RangeError(`no uploaded creature at index ${which.index} (${entries.length} in the file)`);
+    index = which.index;
+  } else if (which.dinoId) {
+    const want = which.dinoId.join(':');
+    const found = entries.flatMap((e, i) => (`${num(e, 'DinoID1')}:${num(e, 'DinoID2')}` === want ? [i] : []));
+    if (found.length !== 1) throw new RangeError(`DinoID ${want}: ${found.length} uploaded creatures with this id`);
+    index = found[0];
+  } else {
+    throw new RangeError('give the index or the DinoID of the uploaded creature');
+  }
+  const entry = entries[index];
+  const dataProp = findProperty(entry, 'DinoData');
+  const data = dataProp?.value;
+  const a = Buffer.isBuffer(data) ? readCreatureArchive(data) : null;
+  if (!dataProp || !a) throw new RangeError(`ArkTamedDinosData[${index}]: no creature in DinoData`);
+  if (!writeContainerTree(a.tree).equals(data as Buffer)) throw new RangeError(`ArkTamedDinosData[${index}]: the creature does not round-trip; refusing to change it`);
+  const dinoId = creatureId(a);
+  if (`${num(entry, 'DinoID1')}:${num(entry, 'DinoID2')}` !== dinoId.join(':')) {
+    throw new RangeError(`ArkTamedDinosData[${index}]: DinoID of the entry and of the creature differ`);
+  }
+
+  const want = Object.entries(r.colors).map(([k, v]) => [Number(k), v] as const);
+  if (!want.length) throw new RangeError('no colours given');
+  for (const [region, id] of want) {
+    if (!Number.isInteger(region) || region < 0 || region >= REGIONS) throw new RangeError(`region must be 0..${REGIONS - 1}, got ${region}`);
+    if (!Number.isInteger(id) || id < 0 || id > 255) throw new RangeError(`region ${region}: colour must be 0..255, got ${id}`);
+    if (!r.anyColor && !isKnownColor(id)) throw new RangeError(`region ${region}: ${id} is no ASE colour (0, 1-100, 201-226)`);
+  }
+
+  const props = a.creature.props;
+  const before = creatureColors(a);
+  const names: number[] = [];
+  for (const [region, id] of want) {
+    const at = props.findIndex((x) => x.name === 'ColorSetIndices' && x.index === region);
+    const prop = at < 0 ? undefined : props[at];
+    if (prop && (prop.type !== 'ByteProperty' || prop.inner !== 'None' || prop.opaque)) {
+      throw new RangeError(`ColorSetIndices[${region}] is a ${prop.type}, expected a plain ByteProperty`);
+    }
+    if (id === 0) {
+      // The game leaves unused regions out of the save.
+      if (at >= 0) props.splice(at, 1);
+      continue;
+    }
+    if (prop) {
+      prop.value = id;
+    } else {
+      // Keep the regions in order: after the last lower region, else before the first higher one,
+      // else before ColorSetNames, else before the DinoIDs.
+      const others = props.flatMap((x, i) => (x.name === 'ColorSetIndices' ? [{ i, region: x.index }] : []));
+      const lower = others.filter((o) => o.region < region).at(-1);
+      const higher = others.find((o) => o.region > region);
+      let pos = lower ? lower.i + 1 : higher ? higher.i : props.findIndex((x) => x.name === 'ColorSetNames');
+      if (pos < 0) pos = props.findIndex((x) => x.name === 'DinoID1');
+      if (pos < 0) pos = props.length;
+      props.splice(pos, 0, { name: 'ColorSetIndices', type: 'ByteProperty', index: region, inner: 'None', value: id });
+    }
+    if (r.names !== 'keep') {
+      const name = findProperty(props, 'ColorSetNames', region);
+      if (name && name.type === 'NameProperty' && !name.opaque) {
+        name.value = storedColorSetName(id);
+        names.push(region);
+      }
+    }
+  }
+
+  const bytes = writeContainerTree(a.tree);
+  const check = readCreatureArchive(bytes);
+  const after = before.slice();
+  for (const [region, id] of want) after[region] = id;
+  if (!check || creatureId(check).join(':') !== dinoId.join(':') || creatureColors(check).join(',') !== after.join(',')) {
+    throw new Error('the recoloured creature does not read back');
+  }
+  dataProp.value = bytes;
+  return { tree: c, recolored: { index, dinoId, cls: a.creature.cls ?? '', before, after, names } };
+}
+
+/** Colours with their names for output: [{ region, id, name }]. */
+export const describeColors = (ids: number[]): { region: number; id: number; name: string | null }[] =>
+  ids.map((id, region) => ({ region, id, name: colorName(id) }));
 
 // ---------------------------------------------------------------- copying items
 
