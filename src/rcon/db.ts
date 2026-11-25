@@ -1,4 +1,4 @@
-// Small SQL layer for the manager: the same queries run on MySQL (5.7 or newer) and SQLite.
+// Small SQL layer for the service: the same queries run on MySQL (5.7 or newer) and SQLite.
 // Placeholders are "?"; upserts and DDL differ per dialect and are built here.
 import { openDatabase, type Database, type SqlValue } from '../sqlite.ts';
 

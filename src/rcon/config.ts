@@ -1,4 +1,4 @@
-// Configuration of ark-manager: a JSON file. Maps can be listed by hand or read from arkmanager
+// Configuration of ark-rcon: a JSON file. Maps can be listed by hand or read from arkmanager
 // instance files (/etc/arkmanager/instances/*.cfg), which already hold port, admin password and server folder.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -31,7 +31,7 @@ export interface DiscordConfig {
   routes: Record<string, string>;
 }
 
-export interface ManagerConfig {
+export interface RconConfig {
   database: string;
   maps: MapConfig[];
   pollSeconds: number;
@@ -40,8 +40,10 @@ export interface ManagerConfig {
   scriptCommands?: string[];
   extraVerified?: string[];
   extraDenied?: string[];
-  /** Modules (absolute paths) loaded at start: `export default function (manager) {}` */
+  /** Modules (absolute paths) loaded at start: `export default function (service) {}` */
   hooks: string[];
+  /** Further databases for hooks, by name (URL like `database`); opened on the first `service.database(name)`. */
+  databases: Record<string, string>;
   /** Keep chat and game log for this many days (0 = forever). */
   retentionDays: number;
 }
@@ -64,12 +66,13 @@ interface RawConfig {
   };
   maps?: RawMap[];
   pollSeconds?: number;
-  web?: Partial<ManagerConfig['web']>;
+  web?: Partial<RconConfig['web']>;
   discord?: Partial<DiscordConfig>;
   scriptCommands?: string[];
   extraVerified?: string[];
   extraDenied?: string[];
   hooks?: string[];
+  databases?: Record<string, string>;
   retentionDays?: number;
 }
 
@@ -148,13 +151,13 @@ export function discoverArkmanager(dir: string, opts: NonNullable<RawConfig['ark
   return maps;
 }
 
-export function loadConfig(path: string): ManagerConfig {
+export function loadConfig(path: string): RconConfig {
   const baseDir = dirname(resolve(path));
   const raw = JSON.parse(readFileSync(path, 'utf8')) as RawConfig;
   return buildConfig(raw, baseDir);
 }
 
-export function buildConfig(raw: RawConfig, baseDir: string): ManagerConfig {
+export function buildConfig(raw: RawConfig, baseDir: string): RconConfig {
   const rawMaps: RawMap[] = [];
   if (raw.arkmanager) rawMaps.push(...discoverArkmanager(raw.arkmanager.instances ?? '/etc/arkmanager/instances', raw.arkmanager));
   for (const m of raw.maps ?? []) {
@@ -164,8 +167,10 @@ export function buildConfig(raw: RawConfig, baseDir: string): ManagerConfig {
   const maps = rawMaps.map((m) => finishMap(m, baseDir));
   const webhooks: Record<string, string> = {};
   for (const [k, v] of Object.entries(raw.discord?.webhooks ?? {})) webhooks[k] = resolveSecret(v, baseDir);
+  const databases: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw.databases ?? {})) databases[k] = resolveSecret(v, baseDir);
   return {
-    database: resolveSecret(raw.database ?? `sqlite:${join(baseDir, 'ark-manager.sqlite')}`, baseDir),
+    database: resolveSecret(raw.database ?? `sqlite:${join(baseDir, 'ark-rcon.sqlite')}`, baseDir),
     maps,
     pollSeconds: raw.pollSeconds ?? 10,
     web: { listen: '127.0.0.1:8790', secureCookies: false, trustProxy: false, ...raw.web },
@@ -174,6 +179,7 @@ export function buildConfig(raw: RawConfig, baseDir: string): ManagerConfig {
     extraVerified: raw.extraVerified,
     extraDenied: raw.extraDenied,
     hooks: (raw.hooks ?? []).map((h) => resolve(baseDir, h)),
+    databases,
     retentionDays: raw.retentionDays ?? 0,
   };
 }

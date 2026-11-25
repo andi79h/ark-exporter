@@ -1,6 +1,6 @@
 #!/bin/sh
 # follow-gamelog.sh <ShooterGame/Saved/Logs> – prints new lines of the newest ServerGame.*.log and switches to the
-# newer file after a server restart. For ark-manager maps whose log files are on another machine:
+# newer file after a server restart. For ark-rcon maps whose log files are on another machine:
 #   "logCommand": ["sh", "-c", "ssh -o BatchMode=yes user@host sh -s /path/to/Logs < scripts/follow-gamelog.sh"]
 # The first file is followed from its end, later files from their start. Empty lines are keep-alives (ignored).
 set -u

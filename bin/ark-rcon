@@ -1,8 +1,8 @@
 #!/bin/sh
-# Starts ark-manager with Bun or Node. ARK_EXPORT_RUNTIME may point at a specific binary
+# Starts ark-rcon with Bun or Node. ARK_EXPORT_RUNTIME may point at a specific binary
 # (needed on Ubuntu 18.04, where neither is installed system-wide).
 dir=$(dirname "$(readlink -f "$0")")
-cli="$dir/../src/manager/cli.ts"
+cli="$dir/../src/rcon/cli.ts"
 if [ -n "$ARK_EXPORT_RUNTIME" ]; then
   exec "$ARK_EXPORT_RUNTIME" "$cli" "$@"
 elif command -v node >/dev/null 2>&1; then

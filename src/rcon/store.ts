@@ -1,4 +1,4 @@
-// Persistent data of the manager: players and their sessions, chat and game log, bans, notes, audit log,
+// Persistent data of the service: players and their sessions, chat and game log, bans, notes, audit log,
 // saved and scheduled commands, triggers, users. All tables start with "mgr_" so they can live in an existing database.
 import { applySchema, upsertSql, type Db, type Param, type Row } from './db.ts';
 
@@ -185,7 +185,7 @@ export class Store {
     return this.all<SessionRow>(`SELECT * FROM mgr_sessions WHERE steam_id = ? ORDER BY start_ts DESC LIMIT ${limit}`, [steamId]);
   }
 
-  // --- events (chat, game log, manager messages) ---------------------------------------------------------
+  // --- events (chat, game log, service messages) ---------------------------------------------------------
   async addEvent(e: { ts: number; map: string | null; type: string; steamId?: string | null; name?: string | null; text?: string | null; data?: unknown; source: string }): Promise<number> {
     const r = await this.db.run('INSERT INTO mgr_events (ts, map, type, steam_id, name, text, data, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [e.ts, e.map, e.type, e.steamId ?? null, e.name ?? null, e.text ?? null, e.data === undefined ? null : JSON.stringify(e.data), e.source]);

@@ -1,17 +1,17 @@
-// ark-manager: RCON manager for ARK servers (console, players, chat/game log, bans, schedules, triggers, web UI).
+// ark-rcon: RCON service for ARK servers (console, players, chat/game log, bans, schedules, triggers, web UI).
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { loadConfig, type ManagerConfig } from './config.ts';
+import { loadConfig, type RconConfig } from './config.ts';
 import { openDb } from './db.ts';
 import { Store } from './store.ts';
-import { Manager, type Actor } from './manager.ts';
+import { RconService, type Actor } from './service.ts';
 import { WebServer } from './web.ts';
 import { checkCommand } from './policy.ts';
 import { hashPassword, isRole, newSecret, tokenHash } from './auth.ts';
 
-const USAGE = `ark-manager <command> [options]
+const USAGE = `ark-rcon <command> [options]
 
-  run                      start the manager and its web interface
+  run                      start the service and its web interface
   maps                     list the configured maps (without passwords)
   check "<command>"        show whether a command may be sent over RCON and why
   exec <map|all> "<cmd>"   send one command through the safety check (--force for untested commands on live maps)
@@ -21,14 +21,14 @@ const USAGE = `ark-manager <command> [options]
   bans export              print the SteamIDs of all active bans (BanList.txt format)
 
 options:
-  --config <file>   configuration (default /etc/ark-manager/config.json or $ARK_MANAGER_CONFIG)
+  --config <file>   configuration (default /etc/ark-rcon/config.json or $ARK_RCON_CONFIG)
 `;
 
 function log(text: string): void {
   process.stderr.write(`${new Date().toISOString()} ${text}\n`);
 }
 
-async function open(configPath: string): Promise<{ config: ManagerConfig; store: Store }> {
+async function open(configPath: string): Promise<{ config: RconConfig; store: Store }> {
   const config = loadConfig(configPath);
   const store = new Store(await openDb(config.database));
   await store.init();
@@ -45,7 +45,7 @@ async function main(): Promise<number> {
   });
   const [cmd, ...args] = positionals;
   if (!cmd || values.help) { process.stdout.write(USAGE); return cmd ? 0 : 1; }
-  const configPath = values.config ?? process.env.ARK_MANAGER_CONFIG ?? '/etc/ark-manager/config.json';
+  const configPath = values.config ?? process.env.ARK_RCON_CONFIG ?? '/etc/ark-rcon/config.json';
 
   if (cmd === 'check') {
     const r = checkCommand(args.join(' '));
@@ -63,17 +63,17 @@ async function main(): Promise<number> {
         return 0;
 
       case 'run': {
-        const manager = new Manager(config, store);
-        manager.on('warning', (w: string) => log(`warning: ${w}`));
-        manager.on('status', (s: { map: string; status: string; error: string | null }) => log(`${s.map}: ${s.status}${s.error ? ` (${s.error})` : ''}`));
-        await manager.start();
-        const web = new WebServer(manager);
+        const service = new RconService(config, store);
+        service.on('warning', (w: string) => log(`warning: ${w}`));
+        service.on('status', (s: { map: string; status: string; error: string | null }) => log(`${s.map}: ${s.status}${s.error ? ` (${s.error})` : ''}`));
+        await service.start();
+        const web = new WebServer(service);
         await web.listen(config.web.listen);
-        log(`ark-manager: ${config.maps.length} maps, web interface on http://${config.web.listen}`);
+        log(`ark-rcon: ${config.maps.length} maps, web interface on http://${config.web.listen}`);
         const shutdown = async () => {
           log('stopping');
           web.close();
-          await manager.stop();
+          await service.stop();
           await store.db.close();
           process.exit(0);
         };
@@ -86,11 +86,11 @@ async function main(): Promise<number> {
       case 'exec': {
         const [target, ...rest] = args;
         if (!target || !rest.length) { process.stderr.write(USAGE); return 1; }
-        const manager = new Manager(config, store);
+        const service = new RconService(config, store);
         const actor: Actor = { name: `cli:${process.env.SUDO_USER ?? process.env.USER ?? '?'}`, type: 'cli', role: 'superadmin' };
-        const results = await manager.exec(actor, target === 'all' ? 'all' : target.split(','), rest.join(' '), { force: values.force });
+        const results = await service.exec(actor, target === 'all' ? 'all' : target.split(','), rest.join(' '), { force: values.force });
         for (const r of results) process.stdout.write(`${r.map}: ${r.ok ? (r.response || '(no response)') : `ERROR ${r.error}`}\n`);
-        await manager.stop();
+        await service.stop();
         return results.every((r) => r.ok) ? 0 : 2;
       }
 
@@ -116,7 +116,7 @@ async function main(): Promise<number> {
         const u = await store.user(name);
         if (!u) { process.stderr.write(`no user ${name}\n`); return 1; }
         if (sub === 'token') {
-          const token = `arkm_${newSecret(32)}`;
+          const token = `arkrcon_${newSecret(32)}`;
           await store.saveUser({ name, role: u.role, tokenHash: tokenHash(token) });
           await store.audit({ actor, actorType: 'cli', action: 'user-token', target: name, result: 'ok' });
           process.stdout.write(`${token}\n`);
