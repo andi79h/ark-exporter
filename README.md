@@ -86,7 +86,7 @@ Jede Zeile hat einen Schlüssel, der Saves und Server-Neustarts überdauert. Zwi
 | `<Besitzer>/<Name>` | Komponenten (Inventar, Status) unter ihrem Besitzer |
 | `dino:…~2`, `~3` … | eingebettete Kopien mit derselben ID; der Ferox legt bei jeder Verwandlung seine alte Gestalt eine Ebene tiefer ab (bis zu 16 Ebenen gesehen) |
 
-Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Die Ursache ist noch unklar.
+Schlüssel über 500 Zeichen werden gekürzt und mit einer Prüfsumme eindeutig gemacht. Ist ein Schlüssel schon vergeben, bekommt jede weitere Kopie `#2`, `#3` usw. Das betrifft vor allem Bauteile: In der Gen2-Probe stehen 19.925 Spieler-Bauteile doppelt im Save, mit gleichem Namen, gleicher Klasse und gleichem Ort. Das schreibt das Spiel selbst so: Verweist ein Actor, der früher in die Datei kommt, auf ein Bauteil, etwa der Boden, auf dem es steht, oder das Teil, an dem es eingerastet ist, hängt der Save-Writer das Bauteil direkt hinter diesen Actor. An seinem eigenen Platz in der Actor-Liste schreibt er es dann ein zweites Mal. Beim Laden wird daraus ein einziger Actor mit den Werten des ersten Eintrags. Entfernte Doppel schreibt der Server beim nächsten Speichern wieder, und ein Bauteil ist erst weg, wenn beide Einträge gelöscht sind. Belegt ist das durch Servertests und den Code von `UWorld::SaveToFile`.
 
 Die GUIDs der Objekttabelle sind als Schlüssel unbrauchbar: Sie sind zu 95 % leer, der Rest ist vielfach doppelt.
 
@@ -337,7 +337,6 @@ Aufbau:
 
 - Bedeutung der `.arktributetribe`-Zahlen. Eine davon sieht wie ein Unix-Zeitstempel aus.
 - Bedeutung der zwei Vektorlisten nach jeder Spielerfigur, vermutlich letzte Positionen.
-- Doppelt gespeicherte Bauteile: Ursache klären.
 - Verlauf schneller machen: ein Durchlauf über beide nach Schlüssel sortierten Snapshots statt mehrerer SQL-Joins.
 - Räumlicher Index (SQLite R*Tree) für Suchen nach Bewegungsmustern.
 - ARK: Survival Ascended (anderes Save-Format).
