@@ -62,7 +62,7 @@ Bei ASE laufen RCON-Befehle über einen eigenen Cheat-Manager ohne Spieler. Dabe
 | Befehle mit großer Wirkung (`DoExit`, `DestroyWildDinos` …): Recht `console.risky` | |
 | Laut Analyse lauffähige, aber ungetestete Befehle: nur `superadmin`, auf Live-Karten zusätzlich mit `force`; in Triggern und Zeitplänen nie | |
 
-Textparameter, die nicht am Ende stehen, müssen in Anführungszeichen: `ServerChatTo "<SteamID>" Text`. Spielerbefehle wie `GiveItemToPlayer` verlangen die ARK-Spieler-ID, nicht die SteamID. Der Manager kennt sie aus den Admin-Logzeilen.
+Textparameter, die nicht am Ende stehen, müssen in Anführungszeichen: `ServerChatTo "<SteamID>" Text`. Spielerbefehle wie `GiveItemToPlayer` verlangen die ARK-Spieler-ID, nicht die SteamID. Der Manager kennt sie aus den Admin-Logzeilen, sonst steht sie in jedem Save an der Spielerfigur (`LinkedPlayerDataID`). `GiveItemToPlayer` gilt als getestet: Mit dem Empfänger online auf derselben Karte kommt das Item an und der Server läuft weiter. Ist der Spieler dort nicht online, passiert still nichts, eine Rückmeldung gibt es in keinem Fall.
 
 Andere Builds (ASA, neuere ASE-Versionen) haben keine geprüfte Tabelle. Für sie gilt die Tabelle von 358.24 nur als Annahme.
 

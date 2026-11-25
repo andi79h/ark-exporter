@@ -63,7 +63,11 @@ test('command policy', () => {
   assert.equal(checkCommand('GetTribeIdPlayerList 123').ok, false);
   assert.match(checkCommand('SetDay 1').reason!, /crashed/);
   assert.match(checkCommand('KillPlayer 1').reason!, /nothing over RCON/);
-  assert.match(checkCommand('GiveItemToPlayer 1 2 3 4 0').reason!, /crash candidate/);
+  assert.equal(checkCommand('GiveItemToPlayer 1 "Blueprint\'/Game/A/B.B\'" 1 0 0').level, 'verified');
+  assert.match(checkCommand('GiveExpToPlayer 1 100 0 0').reason!, /nothing over RCON|crash candidate/);
+  assert.match(checkCommand('LevelUp RconTest 10').reason!, /crashed|crash candidate/);
+  // the operator's list of extra verified commands does not lift a crash candidate, only the built-in list does
+  assert.match(checkCommand('GiveItemNumToPlayer 1 1 1 0 0', { extraVerified: ['GiveItemNumToPlayer'] }).reason!, /crash candidate/);
   assert.match(checkCommand('ListPlayers | SaveWorld').reason!, /chains/);
   assert.match(checkCommand('GetChat', { externalBufferReader: true }).reason!, /BattleMetrics/);
   assert.equal(checkCommand('GetChat').ok, true);
