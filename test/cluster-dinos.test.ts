@@ -8,10 +8,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { clusterEntries, readCluster, readClusterTree, writeClusterTree } from '../src/cluster.ts';
 import {
-  addDino, copyItem, creatureBlueprint, creatureId, creaturesInCluster, creaturesInSave, dinoStatTexts, readCreatureArchive,
-  recolorDino,
+  addDino, copyItem, creatureBlueprint, creatureColors, creatureId, creaturesInCluster, creaturesInSave, dinoStatTexts, readCreatureArchive,
+  recolorDino, recolorSoul, recolorText, recolorTooltip,
 } from '../src/cluster-dinos.ts';
-import { colorName, storedColorSetName } from '../src/colors.ts';
+import { COLOR_LINEAR, colorName, storedColorSetName } from '../src/colors.ts';
 import { findProperty, type Property, sameValue } from '../src/tree.ts';
 import {
   buildContainer, buildEmbedded, buildSave, bytesArray, float, int, path, type Prop, str, struct, structArray, u64,
@@ -444,6 +444,135 @@ test('cluster CLI: recolor --out / --in-place, colours in show and dinos', () =>
     const backups = readdirSync(join(dir, 'bak'));
     assert.equal(backups.length, 1);
     assert.ok(readFileSync(join(dir, 'bak', backups[0])).equals(colorfulFile()), 'backup holds the original');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- recolouring souls
+
+const CRYOPOD = 'BlueprintGeneratedClass /Game/Extinction/CoreBlueprints/Weapons/PrimalItem_WeaponEmptyCryopod.PrimalItem_WeaponEmptyCryopod_C';
+const SOUL_TOOLTIP = 'Class:</> Raptor_Character_BP\\n<RichColor Color="1,0.5,0,1">Colors:</> '
+  + '<RichColor Color="0.1,0.1,0.1,1">[0:36]</> <RichColor Color="0.2,0.2,0.2,1">[2:14]</>\\n<RichColor Color="1,0.5,0,1">Health:</> 1';
+const SOUL_TEXTS = ['Raptor_Character_BP_C_7', 'Clever - Lvl 64 (Raptor)', 'F36,-,M14,-,-,-', '1:0,2:0', `${RAPTOR_ID[0]} ${RAPTOR_ID[1]}`, '36,-,14,-,-,-', '1,2,0,1,0,0,0,1,0'];
+
+/** A soul as Dino Storage v2 writes it: archive in ByteArrays[0], colour bytes in [6], colour texts, tooltip. */
+function colorfulSoul(o: { archetype?: string; layout?: 'v2' | 'short' } = {}): Prop[] {
+  const data = creature('Raptor_Character_BP_C', RAPTOR_ID, {
+    name: 'Clever', colorProps: [byte('ColorSetIndices', 14, 2), ...Array.from({ length: 6 }, (_, i) => nameProp('ColorSetNames', `Old${i}`, i))],
+  });
+  const arrays = o.layout === 'short'
+    ? [[bytesArray('Bytes', data)], [bytesArray('Bytes', Buffer.from([36, 0, 14, 0, 0, 0]))]]
+    : [data, Buffer.from([0, 0, 0, 0, 3, 0]), Buffer.alloc(0), Buffer.alloc(0), Buffer.alloc(0), Buffer.alloc(0), Buffer.from([36, 0, 14, 0, 0, 0]), Buffer.alloc(0)]
+      .map((b) => [bytesArray('Bytes', b)]);
+  const info = [
+    path('ItemArchetype', o.archetype ?? SOUL),
+    struct('ItemId', 'ItemNetID', [u32('ItemID1', 700), u32('ItemID2', 800)]),
+    u32('ItemQuantity', 0), str('CustomItemName', 'Raptor Male (Lvl 64 Clever)'), str('CustomItemDescription', SOUL_TOOLTIP),
+    structArray('CustomItemDatas', [
+      [{ name: 'CustomDataName', type: 'NameProperty', value: (w) => w.string('Settings') }, strings('CustomDataStrings', ['0', '0'])],
+      [
+        { name: 'CustomDataName', type: 'NameProperty', value: (w) => w.string('Dino') },
+        strings('CustomDataStrings', SOUL_TEXTS),
+        struct('CustomDataBytes', 'CustomItemByteArrays', [structArray('ByteArrays', arrays)]),
+      ],
+    ]),
+    u64('OwnerPlayerDataID', 0n),
+  ];
+  return [struct('ArkTributeItem', 'ItemNetInfo', info), float('Version', 2), int('UploadTime', 1_600_000_000)];
+}
+
+function soulFile(items: Prop[][]): Buffer {
+  return buildContainer([{
+    cls: 'ArkCloudInventoryData', names: ['ArkCloudInventoryData_7'], isItem: true,
+    props: [struct('MyArkData', 'ArkInventoryData', [structArray('ArkItems', items)])], extra: Buffer.alloc(4),
+  }], 4);
+}
+
+const soulParts = (tree: ReturnType<typeof readClusterTree>, item: number) => {
+  const info = findProperty(clusterEntries(tree, 'ArkItems')[item], 'ArkTributeItem')!.value as Property[];
+  const dino = (findProperty(info, 'CustomItemDatas')!.value as Property[][])[1];
+  const arrays = findProperty(findProperty(dino, 'CustomDataBytes')!.value as Property[], 'ByteArrays')!.value as Property[][];
+  const bytes = arrays.map((a) => findProperty(a, 'Bytes')!.value as Buffer);
+  return {
+    colors: creatureColors(readCreatureArchive(bytes[0])!), bytes,
+    texts: findProperty(dino, 'CustomDataStrings')!.value as string[], tooltip: findProperty(info, 'CustomItemDescription')!.value as string,
+  };
+};
+
+test('recolorSoul: archive, colour bytes, texts and tooltip; everything else stays', () => {
+  const file = soulFile([colorfulSoul()]);
+  const tree = readClusterTree(file)!;
+  const { recolored } = recolorSoul(tree, { item: 0 }, { colors: { 0: 13, 1: 27, 2: 0, 4: 201 } });
+  assert.deepEqual(recolored.before, [36, 0, 14, 0, 0, 0]);
+  assert.deepEqual(recolored.after, [13, 27, 0, 0, 201, 0]);
+  assert.deepEqual(recolored.dinoId, RAPTOR_ID);
+  assert.deepEqual(recolored.texts, [2, 5]);
+  assert.equal(recolored.tooltip, true);
+  assert.deepEqual(recolored.names, [0, 1, 4]);
+
+  const out = writeClusterTree(tree);
+  const got = soulParts(readClusterTree(out), 0);
+  assert.deepEqual(got.colors, [13, 27, 0, 0, 201, 0]);
+  assert.deepEqual([...got.bytes[6]], [13, 27, 0, 0, 201, 0]);
+  assert.deepEqual([...got.bytes[1]], [0, 0, 0, 0, 3, 0], 'ByteArrays[1] is something else and stays');
+  // F/M marks stay on regions that keep a colour; a region that was unused gets a plain number.
+  assert.deepEqual(got.texts, [SOUL_TEXTS[0], SOUL_TEXTS[1], 'F13,27,-,-,201,-', SOUL_TEXTS[3], SOUL_TEXTS[4], '13,27,-,-,201,-', SOUL_TEXTS[6]]);
+  assert.equal(got.tooltip, 'Class:</> Raptor_Character_BP\\n<RichColor Color="1,0.5,0,1">Colors:</> '
+    + `<RichColor Color="${COLOR_LINEAR[13]},1">[0:13]</> <RichColor Color="${COLOR_LINEAR[27]},1">[1:27]</> `
+    + `<RichColor Color="${COLOR_LINEAR[201]},1">[4:201]</>\\n<RichColor Color="1,0.5,0,1">Health:</> 1`);
+  assert.ok(writeClusterTree(readClusterTree(out)).equals(out), 'round trip');
+  const listed = creaturesInCluster(readClusterTree(out));
+  assert.deepEqual(listed.map((x) => [x.where, x.kind, x.info.colors]), [['ArkItems[0] SoulTrap_DS_C', 'soul', [13, 27, 0, 0, 201, 0]]]);
+
+  // A colour the tooltip already shows keeps its swatch (the map's own colour table).
+  const t2 = readClusterTree(file)!;
+  recolorSoul(t2, { dinoId: RAPTOR_ID }, { colors: { 2: 36 } });
+  assert.match(soulParts(t2, 0).tooltip, /<RichColor Color="0\.1,0\.1,0\.1,1">\[0:36\]<\/> <RichColor Color="0\.1,0\.1,0\.1,1">\[2:36\]<\/>/);
+});
+
+test('recolorSoul: refuses cryopods, unknown layouts and missing items', () => {
+  const tree = readClusterTree(soulFile([colorfulSoul({ archetype: CRYOPOD }), colorfulSoul({ layout: 'short' })]))!;
+  assert.throws(() => recolorSoul(tree, { item: 0 }, { colors: { 0: 1 } }), /cryopod: not supported/);
+  assert.throws(() => recolorSoul(tree, { item: 1 }, { colors: { 0: 1 } }), /unknown soul layout/);
+  assert.throws(() => recolorSoul(tree, { item: 2 }, { colors: { 0: 1 } }), /no uploaded item at index 2/);
+  assert.throws(() => recolorSoul(tree, { dinoId: [1, 2] }, { colors: { 0: 1 } }), /0 souls with this id/);
+  assert.throws(() => recolorSoul(readClusterTree(soulFile([colorfulSoul()]))!, { item: 0 }, { colors: { 0: 150 } }), /no ASE colour/);
+});
+
+test('soul colour texts and tooltips in the forms Dino Storage writes', () => {
+  assert.equal(recolorText('82,0,58,0,45,98', [82, 0, 58, 0, 45, 98], [1, 0, 58, 2, 0, 98]), '1,0,58,2,0,98');
+  assert.equal(recolorText('M96,-,F79,-,M25,F84', [96, 0, 79, 0, 25, 84], [96, 0, 5, 0, 0, 84]), 'M96,-,F5,-,-,F84');
+  assert.equal(recolorText('96,-,79,-,25,84', [96, 0, 79, 0, 25, 83], [1, 0, 0, 0, 0, 0]), null, 'other colours');
+  assert.equal(recolorText('1,2,0,1,0,0,0,1,0', [1, 2, 0, 1, 0, 0], [3, 2, 0, 1, 0, 0]), null, 'nine values');
+  // Older souls list every region, the empty ones without colour: [1:0] or [1:N] (no such region).
+  const old = 'Bred: 2\\n<RichColor Color="1,0.5,0,1">Colors:</> <RichColor Color="a">[0:40]</> [1:0] [2:N] <RichColor Color="b">[3:43]</>\\nX';
+  assert.equal(
+    recolorTooltip(old, [40, 0, 0, 43, 0, 0], [40, 5, 0, 0, 0, 0]),
+    `Bred: 2\\n<RichColor Color="1,0.5,0,1">Colors:</> <RichColor Color="a">[0:40]</> <RichColor Color="${COLOR_LINEAR[5]},1">[1:5]</> [2:N] [3:0]\\nX`,
+  );
+  assert.equal(recolorTooltip('Class:</> X\\nHealth: 1', [1, 0, 0, 0, 0, 0], [2, 0, 0, 0, 0, 0]), null, 'no colours in the tooltip');
+});
+
+test('cluster CLI: recolor a soul by --item and --dino', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ark-recolor-soul-'));
+  try {
+    const file = join(dir, PLAYER);
+    writeFileSync(file, soulFile([colorfulSoul()]));
+    const run = (...args: string[]) => spawnSync(process.execPath, [CLI, 'cluster', ...args], { encoding: 'utf8' });
+    const r1 = run('recolor', file, '--item', '0', '--colors', '0=1', '--out', join(dir, 'a'));
+    assert.equal(r1.status, 0, r1.stderr);
+    const res = JSON.parse(r1.stdout);
+    assert.deepEqual(res.soul.dinoId, RAPTOR_ID);
+    assert.deepEqual(res.colors.after.map((c: { id: number }) => c.id), [1, 0, 14, 0, 0, 0]);
+    assert.equal(res.colorBytes, true);
+    assert.deepEqual(res.textsRewritten, [2, 5]);
+    assert.equal(res.tooltipRewritten, true);
+    const r2 = run('recolor', file, '--dino', RAPTOR_ID.join(':'), '--colors', '5=6', '--out', join(dir, 'b'));
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(soulParts(readClusterTree(readFileSync(join(dir, 'b'))), 0).colors, [36, 0, 14, 0, 0, 6]);
+    assert.notEqual(run('recolor', file, '--item', '0', '--index', '0', '--colors', '0=1', '--out', join(dir, 'c')).status, 0, 'two targets');
+    assert.notEqual(run('recolor', file, '--index', '0', '--colors', '0=1', '--out', join(dir, 'c')).status, 0, 'no uploads');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
