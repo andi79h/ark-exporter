@@ -528,7 +528,7 @@ BP_StorageLarge_C	StorageBox_Large_C	/Game/Mods/StructuresPlusMod/Misc/StorageLa
 
 **Was `remap-classes` tut und lässt:**
 - Neue Namen hängt der Befehl an die Namenstabelle an. Vorhandene Einträge überschreibt er nie, weil ein Eintrag auch anderswo dienen kann.
-- Instanznamen bleiben, wie sie sind: `BP_StorageLarge_C_12` heißt danach weiter so, nur mit der Klasse `StorageBox_Large_C`. Andere Objekte verweisen über diesen Namen, etwa Komponenten auf ihren Actor. Ob das Spiel abweichende Präfixe ohne Folgen hinnimmt, klärt erst ein Test auf einem Server.
+- Instanznamen bleiben, wie sie sind: `BP_StorageLarge_C_12` heißt danach weiter so, nur mit der Klasse `StorageBox_Large_C`. Andere Objekte verweisen über diesen Namen, etwa Komponenten auf ihren Actor. Das Spiel nimmt das hin, siehe [Spieltest](#spieltest-auf-einem-server).
 - Eingebettete Archive und Profile werden nur geschrieben, wenn sie zuvor byte-gleich zurückkodieren. Unbeteiligte Objekte und Dateien bleiben byte-gleich. Das Ergebnis ist deterministisch.
 - Geänderte `.arkprofile`- und `.arktribe`-Dateien neben dem Save landen in `--out-dir`, nie im Eingabeverzeichnis. `--no-profiles` lässt sie aus.
 - `--dry-run` macht alles außer Schreiben. `--report FILE` hält den Bericht fest.
@@ -548,10 +548,11 @@ Unter `remaining` steht je Paket, was danach noch übrig ist: Objekte nach Klass
   - Ein Sattel oder Kostüm der Klassen neben dem Tier leert nur seinen Platz (`Bytes` mit 0 Byte), das Tier bleibt.
   - Ist das Tier selbst von einer entfernten Klasse, geht der ganze Behälter, die Kapsel oder die Seele.
 - Einträge von Listen wie der Dino-Storage-Wiederherstellung (`CCA Misc Data`), die ein solches Tier tragen (`entriesDropped`).
+- Gespeicherte Daten von Buffs der Klassen: `PrimalBuffPersistentData`, deren `ForPrimalBuffClass` auf eine entfernte Klasse zeigt (`buffDataRemoved`). Das Objekt hat selbst eine Kernklasse und blieb deshalb zunächst stehen. Ohne die Mod verwirft das Spiel es beim Laden ohnehin.
 
 Stehen bleiben, und der Bericht zählt sie:
 - Komponenten der Klassen an Actors, die bleiben (`componentsKept`).
-- Pfad-Verweise in anderen Objekten wie Rezepte, Logs oder Belohnungspakete (`pathReferencesLeft`). Das Spiel löst sie ohne die Mod zu nichts auf.
+- Pfad-Verweise in anderen Objekten wie Rezepte, Logs oder Belohnungspakete (`pathReferencesLeft`). Das Spiel löst sie ohne die Mod zu nichts auf und schreibt sie beim nächsten Speichern nicht mehr.
 - Hochgeladene Items und Tiere in Cluster-Dateien sowie Profile. Beides fasst der Befehl nicht an.
 
 **Erstattungsliste** (`--refund FILE.csv`, auch im Trockenlauf): eine Zeile je Stamm, Grund, Art, Klasse, Halter und Gebiet. Das Gebiet ist eine Rasterzelle von `--grid` Einheiten, Standard 10.000 = 100 m. Die Spalten:
@@ -580,7 +581,23 @@ Geschrieben (statt Trockenlauf) braucht ein Lauf auf Gen2 rund 20–26 s und 12,
 - Ausgabe: Der Bericht steht als JSON auf stdout, mit `--report FILE` zusätzlich in einer Datei. `--refund FILE.json` schreibt die Erstattungsliste als JSON-Zeilen mit den CSV-Spaltennamen.
 - Fehler: Exit-Code 1, mit `ARK_EXPORT_ERRORS=json` als `{"error": "…"}` auf stderr.
 
-**Vor dem Einspielen** gehört jeder Lauf zuerst auf eine Testinstanz: Save laden, Log prüfen, `saveworld`, den neuen Save mit `ark-export` lesen und mit dem Bericht vergleichen.
+**Vor dem Einspielen** gehört jeder Lauf zuerst auf eine Testinstanz: Save laden, Log prüfen, `saveworld`, den neuen Save mit `ark-export` lesen und mit dem Bericht vergleichen. Dazu gehört ein Vergleichslauf mit dem unveränderten Save und derselben Mod-Liste. Erst die Objekte je Klasse beider Läufe zeigen, was das Spiel zusätzlich verwirft (siehe unten).
+
+#### Spieltest auf einem Server
+
+Getestet am 26.11.2026 auf einer Testinstanz mit einer frischen Kopie des Gen2-Saves (612 MB, 1,6 Mio. Objekte, ASE 358.24). Jeder Lauf: Save laden (rund 290 s), `saveworld`, den neuen Save lesen und die Objekte je Klasse mit dem Vergleichslauf abgleichen.
+
+| Lauf | Ergebnis |
+|---|---|
+| Vergleich: unveränderter Save, alle Mods | Das Spiel ändert beim Laden und Speichern fast nichts: 2 `NPCZoneVolume` fallen weg, 1 `Buff_Glider_C` kommt dazu. Alle Lager behalten Items, Mengen und Namen. |
+| `remap-classes`, S+-Großlager auf das Vanilla-Lager, alle Mods | Alle 11 Lager laden als `StorageBox_Large_C`, obwohl sie weiter `BP_StorageLarge_C_…` heißen. Items, Mengen und `BoxName` sind unverändert. Die einzige Abweichung sind 8 Rezept-Einträge (`bIsEngram`) in S+-Werkbänken und Replikatoren. Das Spiel baut die Rezeptliste einer Werkbank beim Laden aus deren Klasse neu und legt die Einträge mit neuer ItemID wieder als S+-Item an. Ein neunter Eintrag dieser Art entsteht in einem Exosuit. Echte Items sind nicht betroffen. |
+| `remove-classes --package DinoStorage2 --package CraftableTributeTerminal`, beide Mods aus der Mod-Liste gestrichen | Lädt ohne Fehler. Das Ergebnis gleicht exakt dem Lauf, in dem nur die Mods gestrichen wurden, ohne Editor: gleiche Objektzahl, keine Klasse weicht ab. Pfad-Verweise auf die Mods schreibt das Spiel nicht mehr. Dazu kommt ein Kollateralverlust, siehe unten. |
+| derselbe bereinigte Save, beide Mods noch geladen | Wie der Vergleichslauf. Dino Storage legt sein Verwaltungsobjekt (`DinoStorage2CCA_C`) neu an. |
+
+Was daraus folgt:
+- `remove-classes` entfernt genau das, was das Spiel ohne die Mod selbst verwerfen würde, nicht mehr und nicht weniger. Dazu liefert es die Erstattungsliste, die das Spiel nicht hat. Ohne den Editor gehen auch der Inhalt der Terminals und Seelenfallen still verloren.
+- **Kollateralverluste:** Das Spiel sucht die Klasse eines Objekts über ihren Kurznamen unter den geladenen Klassen. Hat nur die entfernte Mod eine Kernklasse nachgeladen, fehlt diese danach, und ihre Objekte gehen verloren. Auf Gen2 verschwanden so 105 Eier des Bionic-Giga (`PrimalItemConsumable_Egg_Gigant_Bionic_C`, 4 davon befruchtet). Die `PrimalGameData` von Dino Storage v2 verweist auf `BionicGigant_Character_BP`. Erst darüber kennt der Server die Klasse des Eis, denn Bionic-Gigas selbst gibt es auf der Karte nicht. Eier von Bionic-Rex, -Stego und anderen, die dort leben, blieben erhalten. Solche Verluste stehen nicht in der Erstattungsliste. Sie zeigt nur der Vergleich mit dem Vergleichslauf.
+- Profile liest der Server erst, wenn sich der Spieler anmeldet. Ob umgeschriebene Engram-Listen im Spiel greifen, ist deshalb noch offen.
 
 ## Laufzeit und Speicher
 
@@ -660,9 +677,9 @@ Aufbau:
   - Halten verschobene Basen ihre Verbindungen (Stabilität, Strom, Wasser)?
   - Wie verhält sich `PickupAllowedBeforeNetworkTime` bei eingesetzten Vorlagen?
   - Lassen sich Bauteile mit gelöschten Nachbarn abreißen, und stürzen frei hängende Teile ein?
-  - Nimmt das Spiel umgeschriebene Klassen an, deren Instanznamen noch das alte Präfix tragen (`BP_StorageLarge_C_12` als `StorageBox_Large_C`)?
-  - Lädt es Kryokapseln mit geleertem Sattelplatz, und verwirft es Pfad-Verweise auf entfernte Klassen ohne Fehler?
-  - Wie löst es einen Kurznamen auf, den Kernspiel und Mod beide führen (geladene Klassen oder Pfadtabelle)?
+  - Lädt es Kryokapseln mit geleertem Sattelplatz? Im Gen2-Test kam keiner vor.
+  - Welche Klasse nimmt es bei einem Kurznamen, den Kernspiel und Mod beide führen, wenn beide geladen sind? Der Spieltest zeigt nur, dass es unter den geladenen Klassen sucht.
+  - Behalten Spieler nach `remap-classes` ihre Engramme? Dafür muss sich ein Spieler mit umgeschriebenem Profil anmelden.
 - Save-Version 10–11 schreiben (Stored-Data-Blöcke), ASA.
 
 ## Quellen und Lizenz
