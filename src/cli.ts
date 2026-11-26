@@ -4,6 +4,7 @@ import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { inspectAsa, inspectContainers, isAsaWorld } from './asa/inspect.ts';
 import { CLUSTER_USAGE, clusterCommand } from './cluster-cli.ts';
+import { EDIT_USAGE, editCommand } from './editor-cli.ts';
 import { pruneSnapshots, updateHistory } from './history.ts';
 import { VOLATILE_FIELDS } from './normalize.ts';
 import { readSave } from './savegame.ts';
@@ -26,6 +27,7 @@ Usage:
   ark-export query <file.sqlite> <SQL> [params...]   print rows as JSON lines
   ark-export compare <old.sqlite> <new.sqlite>       which fields change between two snapshots
   ark-export cluster <command> ...                   cluster files, see below
+  ark-export edit verify|list|delete|decay|...       change world saves, see below
 
 Options:
   --out DIR        export directory (one folder per map)
@@ -37,7 +39,8 @@ Options:
   --mysql URL      also keep MySQL up to date (run, sync): mysql://user:pass@host/db,
                    or @FILE with that URL; default: $ARK_EXPORT_MYSQL
 
-${CLUSTER_USAGE}`;
+${CLUSTER_USAGE}
+${EDIT_USAGE}`;
 
 function log(msg: string): void {
   process.stdout.write(`${new Date().toISOString()} ${msg}\n`);
@@ -187,6 +190,7 @@ async function compare(oldFile: string, newFile: string): Promise<void> {
 
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'cluster') return clusterCommand(argv.slice(1));
+  if (argv[0] === 'edit') return editCommand(argv.slice(1));
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -283,6 +287,8 @@ async function main(argv: string[]): Promise<number> {
 }
 
 main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e: Error) => {
-  process.stderr.write(`ark-export: ${e.message}\n`);
+  // Programs calling the CLI (the web interface) can ask for errors as JSON.
+  if (process.env.ARK_EXPORT_ERRORS === 'json') process.stderr.write(`${JSON.stringify({ error: e.message })}\n`);
+  else process.stderr.write(`ark-export: ${e.message}\n`);
   process.exitCode = 1;
 });

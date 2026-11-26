@@ -1,5 +1,7 @@
-// Little-endian binary writer, the counterpart of Archive for inline-named archives (profiles,
-// tribes, cluster files, cryopod contents). Names are written as FStrings; name tables are not supported.
+// Little-endian binary writer, the counterpart of Archive. Without a name table, names are written
+// inline as FStrings (profiles, tribes, cluster files, cryopod contents); with one (.ark files) as
+// index into the table plus instance number.
+import type { NameTable } from './nametable.ts';
 
 /** UE4 writes an FString as single bytes only when every character is 7-bit ASCII, otherwise as UTF-16LE. */
 export function isPureAnsi(s: string): boolean {
@@ -10,8 +12,13 @@ export function isPureAnsi(s: string): boolean {
 export class BinaryWriter {
   private buf: Buffer;
   private size = 0;
+  /** Name table of a .ark file; null writes names inline. */
+  readonly names: NameTable | null;
 
-  constructor(initial = 4096) { this.buf = Buffer.allocUnsafe(initial); }
+  constructor(initial = 4096, names: NameTable | null = null) {
+    this.buf = Buffer.allocUnsafe(initial);
+    this.names = names;
+  }
 
   get length(): number { return this.size; }
 
@@ -59,8 +66,13 @@ export class BinaryWriter {
     return this;
   }
 
-  /** Inline FName. */
-  name(s: string | null): this { return this.string(s); }
+  /** FName: inline string, or (index, instance) when the writer has a name table. */
+  name(s: string | null): this {
+    if (this.names === null) return this.string(s);
+    if (s === null) throw new TypeError('a name table cannot store a null name');
+    const [index, instance] = this.names.encode(s);
+    return this.i32(index).i32(instance);
+  }
 
   toBuffer(): Buffer { return Buffer.from(this.buf.subarray(0, this.size)); }
 }
