@@ -2,6 +2,9 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { inspectAsa, inspectContainers, isAsaWorld } from './asa/inspect.ts';
+import { CLUSTER_USAGE, clusterCommand } from './cluster-cli.ts';
+import { EDIT_USAGE, editCommand } from './editor-cli.ts';
 import { pruneSnapshots, updateHistory } from './history.ts';
 import { VOLATILE_FIELDS } from './normalize.ts';
 import { readSave } from './savegame.ts';
@@ -12,7 +15,8 @@ import { ReadContext } from './types.ts';
 const USAGE = `ark-export ${EXPORTER_VERSION} – ARK: Survival Evolved savegame export
 
 Usage:
-  ark-export inspect <Map.ark>                       coverage report (JSON), writes nothing
+  ark-export inspect <Map.ark> [--limit N]            coverage report (JSON), writes nothing;
+                                                     ASE and ASA (SQLite) world saves, ASA .arkprofile/.arktribe
   ark-export snapshot <Map.ark> --out DIR [--name N]  full snapshot into DIR/N/snapshots/<time>.sqlite
   ark-export history --out DIR --name N [--keep K]    diff newest snapshot against the previous one
   ark-export run <Map.ark> --out DIR [--name N] [--keep K]
@@ -22,6 +26,8 @@ Usage:
   ark-export mysql --out DIR [--name N] --mysql URL  copy newest snapshot and history to MySQL
   ark-export query <file.sqlite> <SQL> [params...]   print rows as JSON lines
   ark-export compare <old.sqlite> <new.sqlite>       which fields change between two snapshots
+  ark-export cluster <command> ...                   cluster files, see below
+  ark-export edit verify|list|delete|decay|...       change world saves, see below
 
 Options:
   --out DIR        export directory (one folder per map)
@@ -32,7 +38,9 @@ Options:
   --no-containers  leave out .arkprofile/.arktribe/.arktributetribe files
   --mysql URL      also keep MySQL up to date (run, sync): mysql://user:pass@host/db,
                    or @FILE with that URL; default: $ARK_EXPORT_MYSQL
-`;
+
+${CLUSTER_USAGE}
+${EDIT_USAGE}`;
 
 function log(msg: string): void {
   process.stdout.write(`${new Date().toISOString()} ${msg}\n`);
@@ -103,7 +111,15 @@ async function runOne(save: string, out: string, name: string, keep: number, con
   pruneSnapshots(mapDir, keep, log);
 }
 
-async function inspect(save: string): Promise<void> {
+async function inspect(save: string, limit: number | undefined, containers: boolean): Promise<void> {
+  if (/\.ark(profile|tribe)$/.test(save)) {
+    process.stdout.write(`${JSON.stringify(inspectContainers([save]), null, 2)}\n`);
+    return;
+  }
+  if (isAsaWorld(save)) {
+    process.stdout.write(`${JSON.stringify(await inspectAsa(save, { limit, containers }), null, 2)}\n`);
+    return;
+  }
   const t0 = performance.now();
   const ctx = new ReadContext();
   const s = readSave(readFileSync(save), ctx);
@@ -173,6 +189,8 @@ async function compare(oldFile: string, newFile: string): Promise<void> {
 }
 
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === 'cluster') return clusterCommand(argv.slice(1));
+  if (argv[0] === 'edit') return editCommand(argv.slice(1));
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -184,6 +202,7 @@ async function main(argv: string[]): Promise<number> {
       'no-containers': { type: 'boolean', default: false },
       exclude: { type: 'string', default: '' },
       mysql: { type: 'string' },
+      limit: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -198,7 +217,7 @@ async function main(argv: string[]): Promise<number> {
   };
   switch (values.help ? 'help' : command) {
     case 'inspect':
-      await inspect(args[0]);
+      await inspect(args[0], values.limit ? Number(values.limit) : undefined, containers);
       return 0;
     case 'snapshot': {
       const save = resolve(args[0]);
@@ -268,6 +287,8 @@ async function main(argv: string[]): Promise<number> {
 }
 
 main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e: Error) => {
-  process.stderr.write(`ark-export: ${e.message}\n`);
+  // Programs calling the CLI (the web interface) can ask for errors as JSON.
+  if (process.env.ARK_EXPORT_ERRORS === 'json') process.stderr.write(`${JSON.stringify({ error: e.message })}\n`);
+  else process.stderr.write(`ark-export: ${e.message}\n`);
   process.exitCode = 1;
 });

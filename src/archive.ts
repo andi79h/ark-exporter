@@ -1,5 +1,6 @@
 // Little-endian binary reader for ARK: Survival Evolved archives (.ark, .arkprofile, .arktribe,
 // and the archives embedded in cryopods).
+import type { NameTable } from './nametable.ts';
 
 /** Shortest decimal that converts back to exactly the same float32. Keeps the JSON small and lossless. */
 export function float32(v: number): number | string {
@@ -23,12 +24,24 @@ export class Archive {
   pos: number;
   /** Name table of a .ark file. null means names are stored inline as strings (profiles, tribes, cryopods). */
   names: string[] | null;
+  /** Set by the save editor: the name table, for writing names back the way they were stored. */
+  table: NameTable | null = null;
+  /** Report every name read to the table (needed only when the object will be written back). */
+  observe = false;
 
   constructor(buf: Buffer, names: string[] | null = null, pos = 0) {
     this.buf = buf;
     this.dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     this.names = names;
     this.pos = pos;
+  }
+
+  /** Reader for a .ark name table; with observe it also feeds the table's write-back encodings. */
+  static withTable(buf: Buffer, table: NameTable, pos = 0, observe = true): Archive {
+    const a = new Archive(buf, table.names, pos);
+    a.table = table;
+    a.observe = observe;
+    return a;
   }
 
   get length(): number { return this.buf.length; }
@@ -50,9 +63,11 @@ export class Archive {
   i64(): string { this.need(8); const v = this.dv.getBigInt64(this.pos, true); this.pos += 8; return v.toString(); }
   u64(): string { this.need(8); const v = this.dv.getBigUint64(this.pos, true); this.pos += 8; return v.toString(); }
   i64n(): bigint { this.need(8); const v = this.dv.getBigInt64(this.pos, true); this.pos += 8; return v; }
+  u64n(): bigint { this.need(8); const v = this.dv.getBigUint64(this.pos, true); this.pos += 8; return v; }
   f32raw(): number { this.need(4); const v = this.dv.getFloat32(this.pos, true); this.pos += 4; return v; }
   f32(): number | string { return float32(this.f32raw()); }
-  f64(): number | string { this.need(8); const v = this.dv.getFloat64(this.pos, true); this.pos += 8; return float64(v); }
+  f64raw(): number { this.need(8); const v = this.dv.getFloat64(this.pos, true); this.pos += 8; return v; }
+  f64(): number | string { return float64(this.f64raw()); }
   bool(): boolean { return this.i32() !== 0; }
 
   bytes(n: number): Buffer {
@@ -90,6 +105,8 @@ export class Archive {
     this.pos += 8;
     const s = this.names[idx - 1];
     if (s === undefined) throw new RangeError(`name index ${idx} outside name table at ${this.pos - 8}`);
-    return inst ? `${s}_${inst - 1}` : s;
+    const rendered = inst ? `${s}_${inst - 1}` : s;
+    if (this.observe && this.table) this.table.observe(rendered, idx, inst);
+    return rendered;
   }
 }

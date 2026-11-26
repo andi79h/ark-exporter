@@ -20,6 +20,13 @@ export class ObjectRef {
   }
 }
 
+/** ObjectProperty pointing at an object by its GUID (ARK: Survival Ascended world saves). */
+export class GuidRef {
+  readonly guid: string;
+  constructor(guid: string) { this.guid = guid; }
+  toJSON(): Value { return /^0+$/.test(this.guid) ? null : { $guid: this.guid }; }
+}
+
 /** ObjectProperty pointing at an object by path name (classes, assets). */
 export class PathRef {
   readonly path: string | null;
@@ -41,7 +48,9 @@ export class Blob {
 /** A byte array that turned out to be a complete embedded archive (e.g. a creature inside a cryopod). */
 export class Embedded {
   readonly objects: GameObject[];
-  constructor(objects: GameObject[]) { this.objects = objects; }
+  /** The archive as stored (a view into the file buffer), e.g. to copy a creature into a cluster file. */
+  readonly bytes: Buffer | null;
+  constructor(objects: GameObject[], bytes: Buffer | null = null) { this.objects = objects; this.bytes = bytes; }
   toJSON(): Value {
     return jsonContext.onEmbedded ? jsonContext.onEmbedded(this) : { $objects: this.objects.length };
   }
@@ -50,7 +59,7 @@ export class Embedded {
 export type Value =
   | null | boolean | number | string
   | Value[] | { [key: string]: Value }
-  | ObjectRef | PathRef | Blob | Embedded;
+  | ObjectRef | GuidRef | PathRef | Blob | Embedded;
 
 export type Props = { [key: string]: Value };
 
@@ -62,6 +71,8 @@ export interface GameObject {
   /** Hex GUID, null when all zero. */
   guid: string | null;
   cls: string;
+  /** ASA: full class path from the name table (cls is its last segment). */
+  clsPath?: string;
   isItem: boolean;
   /** Actor name first, then the names of its outer objects. */
   names: string[];
@@ -80,11 +91,26 @@ export interface GameObject {
 export class ReadContext {
   readonly issues = new Map<string, number>();
   readonly rawBytes = new Map<string, number>();
+  /** What was read, for the coverage report (property and struct types; filled by the ASA reader). */
+  readonly seen = new Map<string, number>();
   /** Decodes byte arrays (cryopods); returns null to keep the bytes. Set by the container readers. */
-  decodeBytes: ((propName: string, bytes: Buffer) => Value | null) | null = null;
+  decodeBytes: ((propName: string, bytes: Buffer, ctx: ReadContext) => Value | null) | null = null;
+  /** Class of the object being read, so raw bytes in the report name their owner. */
+  owner = '';
 
   note(what: string, n = 1): void {
     this.issues.set(what, (this.issues.get(what) ?? 0) + n);
+  }
+
+  saw(what: string, n = 1): void {
+    this.seen.set(what, (this.seen.get(what) ?? 0) + n);
+  }
+
+  /** Folds the counters of a nested read (embedded archive) into this one. */
+  absorb(other: ReadContext, prefix: string): void {
+    for (const [k, v] of other.issues) this.note(`${prefix}${k}`, v);
+    for (const [k, v] of other.rawBytes) this.keepRaw(`${prefix}${k}`, v);
+    for (const [k, v] of other.seen) this.saw(`${prefix}${k}`, v);
   }
 
   keepRaw(what: string, bytes: number): void {
