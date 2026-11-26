@@ -205,12 +205,13 @@ test('copy-item: soul with new ItemID, owner, SteamID and DinoIDs', () => {
   const entry = clusterEntries(src, 'ArkItems')[0];
   const target = readClusterTree(clusterFile({ player: true }));
   const itemIds: [number, number][] = [[500, 600], [501, 601]]; // the first one is taken by the original
-  const { tree, added } = copyItem(target, entry, { steamId: PLAYER, expiresIn: 3600 }, {
+  const { tree, added } = copyItem(target, entry, { steamId: PLAYER, owner: 'player', lifetime: 3600 }, {
     now: 1_900_000_000, randomId: () => itemIds.shift()!, randomDinoId: () => [9, 10],
   });
   assert.equal(added.index, 1);
   assert.deepEqual(added.creatures, [{ from: REX_ID, to: [9, 10] }]);
-  assert.equal(added.owner, '123456789', 'PlayerDataID of the target file');
+  assert.equal(added.owner, '123456789', 'owner player: PlayerDataID of the target file');
+  assert.equal(copyItem(readClusterTree(clusterFile({ player: true })), entry).added.owner, '0', 'default owner 0, as the game writes');
   const file = writeClusterTree(tree);
   assert.ok(writeClusterTree(readClusterTree(file)).equals(file));
   const it = readCluster(file).items[1];
