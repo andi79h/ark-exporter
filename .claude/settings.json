@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__ccd_session_mgmt__set_session_title"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__ccd_session__start_session|mcp__ccd_session__spawn_task|mcp__ccd_session__hand_off_to_session",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-title-ticket-number.py\" --spawn-task",
+            "timeout": 10,
+            "statusMessage": "Sitzungstitel gegen die Regel ark#<Ticket> prüfen"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pr-base-guard.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-title-ticket-number.py\" --prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

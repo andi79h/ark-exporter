@@ -6,3 +6,7 @@ node_modules/
 *.arkprofile
 *.arktribe
 *.arktributetribe
+
+# Claude Code: lokale Einstellungen und Worktrees der Sitzungen
+.claude/settings.local.json
+.claude/worktrees/
