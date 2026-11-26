@@ -1,12 +1,15 @@
 // `ark-export edit ...`: change .ark world saves (ASE, version 9). Always writes a new file; the
 // input is never touched. Every written file is read back with the export reader before it counts.
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { ClassRemapper, OwnerIndex, parseMapping, type Scope, type TeamInfo } from './classes.ts';
 import { SaveEditor } from './editor.ts';
 import { clearInventories, deleteObjects, moveObjects, type Owner, type Placement, refreshDecay } from './operations.ts';
 import { checkPlacement, copyObjects, exportPattern, parsePattern, placePattern } from './pattern.ts';
+import { aggregateRefunds, refundCsv, refundJson, removeClasses } from './removal.ts';
 import { readSave } from './savegame.ts';
+import { findProperty, type Property, readContainerTree, type TreeContainer, writeContainerTree } from './tree.ts';
 import { ReadContext } from './types.ts';
 import { checkConsistency, verifySave } from './verify.ts';
 import { bounds, type Entry, indexWorld, type Kind, select, type Selection } from './world.ts';
@@ -32,6 +35,15 @@ export const EDIT_USAGE = `Editing world saves (.ark, ASE save version 9) – wr
   ark-export edit pattern-place <Map.ark> --pattern FILE --at X,Y,Z[,YAW] OWNER [--check] [--force]
                        [--limit N] [--limit-radius R] [--margin M] --out FILE
                                                    place a pattern; --check only reports
+  ark-export edit remap-classes <Map.ark> --mapping FILE [--assets FILE] [--no-profiles] [--cluster DIR]
+                       [--trust-short-names] [--report FILE] (--dry-run | --out FILE [--out-dir DIR])
+                                                   rewrite classes to replacements in every layer:
+                                                   object table, paths, strings, cryopods, profiles, tribes
+  ark-export edit remove-classes <Map.ark> (--class C | --package P)... [--assets FILE] [--trust-short-names]
+                       [--refund FILE.csv|.json] [--grid UNITS] [--report FILE] (--dry-run | --out FILE)
+                                                   remove classes everywhere (also foreign inventories,
+                                                   cryopods, soul traps) with a refund list per tribe
+  ark-export edit asset-list <Content/Mods>...     asset paths of installed mods, input for --assets
 
 SELECTION (at least one of tribe, owner, box, radius, class):
   --tribe ID             TargetingTeam (tribe id, or player id of solo players)
@@ -41,7 +53,12 @@ SELECTION (at least one of tribe, owner, box, radius, class):
   --class C              class name, * as wildcard; repeatable
   --kind K,K             structure (default), dino, pawn, actor
 OWNER (copy, pattern-place): --team ID [--tribe-name S] [--player-id N] [--player-name S]
-Coordinates are Unreal units as shown by the in-game command "ccc" (x y z pitch yaw roll).`;
+Coordinates are Unreal units as shown by the in-game command "ccc" (x y z pitch yaw roll).
+MAPPING (remap-classes): tab-separated old_class, new_class, old_path, new_path [, only_mod_package],
+or a JSON array of objects with these keys.
+Reports are JSON on stdout; with ARK_EXPORT_ERRORS=json errors are {"error": "..."} on stderr.
+Short class names in object headers change only when the save (or --assets) proves the name belongs
+to the old package alone; --trust-short-names overrides that. Full paths always need a full match.`;
 
 const print = (v: unknown): void => {
   process.stdout.write(`${JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x), 2)}\n`);
@@ -183,7 +200,9 @@ function finish(input: string, ed: SaveEditor, v: Values, report: Record<string,
   const file = writeOut(input, v.out as string | undefined, chunks, v.force === true);
   const check = readBack(ed.buf, file, live, addedExtra);
   const consistency = { before: checkConsistency(SaveEditor.open(ed.buf)), after: checkConsistency(SaveEditor.open(readFileSync(file))) };
-  print({ ...report, consistency, out: file, bytes: chunks.reduce((n, c) => n + c.length, 0), objects: live, readBack: check, addedNames: ed.table.added.length });
+  const out = { ...report, consistency, out: file, bytes: chunks.reduce((n, c) => n + c.length, 0), objects: live, readBack: check, addedNames: ed.table.added.length };
+  writeReport(v, input, out);
+  print(out);
   return 0;
 }
 
@@ -211,6 +230,78 @@ function companions(world: Entry[], chosen: Entry[], kind: Kind): Entry[] {
     && e.location.z >= b.min.z - m && e.location.z <= b.max.z + 2 * m);
 }
 
+// ---------------------------------------------------------------- classes
+
+/** Tribe of a profile (MyData.TribeId, else the player) or a tribe file (TribeData.TribeId). */
+function containerTeam(c: TreeContainer): TeamInfo {
+  for (const o of c.objects) {
+    const md = findProperty(o.props, 'MyData') ?? findProperty(o.props, 'TribeData');
+    if (!md || !Array.isArray(md.value)) continue;
+    const l = md.value as Property[];
+    const num = (n: string): number | null => { const v = findProperty(l, n)?.value; return typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v) : null; };
+    const text = (n: string): string | null => { const v = findProperty(l, n)?.value; return typeof v === 'string' ? v : null; };
+    const tribe = num('TribeId');
+    return { team: tribe || num('PlayerDataID'), name: text('TribeName') ?? text('PlayerName') };
+  }
+  return { team: null, name: null };
+}
+
+interface ContainerFile { name: string; scope: Scope; path: string; out: string; buf: Buffer; tree: TreeContainer; }
+
+/** .arkprofile and .arktribe files next to the save; every file in a cluster directory. */
+function readContainers(dir: string, scope: 'profiles' | 'cluster', outDir: string | null): { files: ContainerFile[]; skipped: string[] } {
+  const files: ContainerFile[] = [];
+  const skipped: string[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    const path = join(dir, name);
+    let sc: Scope;
+    if (scope === 'cluster') sc = 'cluster';
+    else if (name.endsWith('.arkprofile')) sc = 'profile';
+    else if (name.endsWith('.arktribe')) sc = 'tribe';
+    else continue;
+    if (!statSync(path).isFile()) continue;
+    const buf = readFileSync(path);
+    if (buf.length === 0) continue; // players without uploads
+    try {
+      const tree = readContainerTree(buf);
+      // Only files that encode back to the same bytes are ever rewritten.
+      if (!writeContainerTree(tree).equals(buf)) { skipped.push(`${name}: does not encode back identically`); continue; }
+      const out = outDir ? (scope === 'cluster' ? join(outDir, 'cluster', name) : join(outDir, name)) : '';
+      files.push({ name, scope: sc, path, out, buf, tree });
+    } catch (e) {
+      skipped.push(`${name}: ${(e as Error).message}`);
+    }
+  }
+  return { files, skipped };
+}
+
+/** Asset paths of installed mods: <id>.mod names the package root, <id>/ holds the cooked assets. */
+export function assetListOf(modsDir: string): string[] {
+  const out: string[] = [];
+  for (const f of readdirSync(modsDir).sort()) {
+    const m = /^(\d+)\.mod$/.exec(f);
+    if (!m) continue;
+    const meta = readFileSync(join(modsDir, f)).toString('latin1');
+    const root = /\/Game\/Mods\/([^/\x00-\x1f]+)\//.exec(meta)?.[1] ?? m[1];
+    const base = join(modsDir, m[1]);
+    if (!existsSync(base)) continue;
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(uasset|umap)$/i.test(e.name)) out.push(`/Game/Mods/${root}/${relative(base, p).replace(/\\/g, '/').replace(/\.(uasset|umap)$/i, '')}`);
+      }
+    };
+    walk(base);
+  }
+  return out;
+}
+
+function writeReport(v: Values, input: string, report: Record<string, unknown>): void {
+  if (!v.report) return;
+  writeOut(input, v.report as string, [Buffer.from(`${JSON.stringify(report, null, 2)}\n`)], v.force === true);
+}
+
 export async function editCommand(argv: string[]): Promise<number> {
   const [sub, ...args] = argv;
   const opts = {
@@ -222,6 +313,10 @@ export async function editCommand(argv: string[]): Promise<number> {
     items: { type: 'boolean', default: false }, pattern: { type: 'string' }, anchor: { type: 'string' }, name: { type: 'string' },
     at: { type: 'string' }, check: { type: 'boolean', default: false }, limit: { type: 'string' }, 'limit-radius': { type: 'string' },
     margin: { type: 'string' }, 'no-reencode': { type: 'boolean', default: false },
+    mapping: { type: 'string' }, assets: { type: 'string' }, 'no-profiles': { type: 'boolean', default: false },
+    cluster: { type: 'string' }, 'trust-short-names': { type: 'boolean', default: false }, report: { type: 'string' },
+    'dry-run': { type: 'boolean', default: false }, 'out-dir': { type: 'string' }, package: { type: 'string', multiple: true },
+    refund: { type: 'string' }, grid: { type: 'string' },
   } as const;
   const { values: v, positionals } = parseArgs({ args, options: opts, allowPositionals: true });
   const values = v as Values;
@@ -337,6 +432,85 @@ export async function editCommand(argv: string[]): Promise<number> {
         operation: 'pattern-place', pattern: p.name, at: placeOpts.at, added: r.indices.length, warnings: r.warnings,
         blocking: r.blocking, overlapping: r.overlapping.length, nearbyZ: r.nearbyZ, structuresInRange: r.structuresInRange,
       });
+    }
+    case 'remap-classes': {
+      if (!values.mapping) throw new Error('--mapping FILE is required');
+      const dry = values['dry-run'] === true;
+      if (!dry && !values.out) throw new Error('--out FILE is required (or --dry-run)');
+      const rows = parseMapping(readFileSync(values.mapping as string, 'utf8'));
+      const outDir = values['out-dir'] ? resolve(values['out-dir'] as string) : null;
+      const profiles = values['no-profiles'] ? { files: [], skipped: [] } : readContainers(dirname(resolve(input)), 'profiles', outDir);
+      const cluster = values.cluster ? readContainers(values.cluster as string, 'cluster', outDir) : { files: [], skipped: [] };
+      const containers = [...profiles.files, ...cluster.files];
+      if (outDir) {
+        for (const d of [dirname(resolve(input)), values.cluster ? resolve(values.cluster as string) : null]) {
+          if (d && (outDir === d || join(outDir, 'cluster') === d)) throw new Error('--out-dir must not be a directory the files are read from');
+        }
+      }
+      const buf = readFileSync(input);
+      const ed = SaveEditor.open(buf);
+      if (!ed.hibernationEmpty) process.stderr.write('warning: the save has hibernation entries; creatures stored there are not seen by the editor\n');
+      const remapper = new ClassRemapper(rows, {
+        assetList: values.assets ? readFileSync(values.assets as string, 'utf8') : undefined, trustShortNames: values['trust-short-names'] === true,
+      });
+      remapper.scanWorld(ed, new OwnerIndex(ed));
+      for (const c of containers) remapper.scanContainer(c.name, c.scope, c.tree, containerTeam(c.tree));
+      remapper.decide();
+      const edited = remapper.applyWorld(ed);
+      const changedFiles = containers.filter((c) => remapper.applyContainer(c.name, c.scope, c.tree));
+      if (!dry && changedFiles.length && !outDir) throw new Error(`${changedFiles.length} profile, tribe or cluster files change: --out-dir DIR is required (or --no-profiles)`);
+      const r = remapper.report();
+      const report: Record<string, unknown> = {
+        operation: 'remap-classes', dryRun: dry, map: basename(input), objectsEdited: edited, addedNames: ed.table.added.length,
+        filesChanged: changedFiles.map((c) => (c.scope === 'cluster' ? `cluster/${c.name}` : c.name)), filesSkipped: [...profiles.skipped, ...cluster.skipped],
+        ...r,
+      };
+      if (!r.assetList) (report as { warnings?: string[] }).warnings = ['no --assets: short names were checked only against paths found in the scanned files'];
+      if (dry) {
+        writeReport(values, input, report);
+        print(report);
+        return 0;
+      }
+      const written: string[] = [];
+      for (const c of changedFiles) {
+        const data = writeContainerTree(c.tree);
+        mkdirSync(dirname(c.out), { recursive: true });
+        written.push(writeOut(c.path, c.out, [data], values.force === true));
+        readContainerTree(readFileSync(c.out)); // reads back
+      }
+      report.filesWritten = written;
+      return finish(input, ed, values, report);
+    }
+    case 'remove-classes': {
+      const dry = values['dry-run'] === true;
+      if (!dry && !values.out) throw new Error('--out FILE is required (or --dry-run)');
+      const packages = (values.package as string[] | undefined) ?? [];
+      if (packages.length && !values.assets) process.stderr.write('warning: --package without --assets finds only classes whose paths occur in the save\n');
+      const buf = readFileSync(input);
+      const ed = SaveEditor.open(buf);
+      if (!ed.hibernationEmpty) process.stderr.write('warning: the save has hibernation entries; creatures stored there are not seen by the editor\n');
+      const { report: r, refunds } = removeClasses(ed, {
+        classes: values.class as string[] | undefined, packages,
+        assetList: values.assets ? readFileSync(values.assets as string, 'utf8') : undefined, trustShortNames: values['trust-short-names'] === true,
+      });
+      const map = basename(input).replace(/\.ark$/i, '');
+      const grid = number(values.grid as string | undefined, '--grid') ?? 10_000;
+      if (grid <= 0) throw new Error('--grid must be positive');
+      const rows = aggregateRefunds(refunds, grid);
+      const tribes = new Set(rows.map((x) => x.team));
+      const report: Record<string, unknown> = { operation: 'remove-classes', dryRun: dry, map: basename(input), ...r, refund: { rows: rows.length, tribes: tribes.size, entries: refunds.length } };
+      if (values.refund) {
+        const file = values.refund as string;
+        const text = /\.json$/i.test(file) ? `${JSON.stringify(refundJson(map, rows), null, 1)}\n` : refundCsv(map, rows);
+        report.refundFile = writeOut(input, file, [Buffer.from(text)], values.force === true);
+      }
+      if (dry) { writeReport(values, input, report); print(report); return 0; }
+      return finish(input, ed, values, report);
+    }
+    case 'asset-list': {
+      if (!positionals.length) throw new Error('asset-list needs at least one Content/Mods directory');
+      for (const d of positionals) for (const line of assetListOf(d)) process.stdout.write(`${line}\n`);
+      return 0;
     }
   }
   process.stderr.write(`${EDIT_USAGE}\n`);

@@ -13,7 +13,8 @@
 // UploadTime and the listing fields from the source entry or derived from the archive.
 // copyItem copies an ArkItems entry (e.g. a filled soul or cryopod) with a new ItemID, upload time,
 // expiry and owner and gives the creatures inside new DinoIDs as well.
-// recolorDino sets the colour regions of an uploaded creature in place (colors.ts).
+// recolorDino sets the colour regions of an uploaded creature in place (colors.ts), recolorSoul those of
+// the creature in an uploaded Dino Storage v2 soul together with what the soul shows.
 //
 // Creatures that stand in the world of a save are objects of the save itself. They are packed into
 // the same archive form with toInlineArchive and then shaped like the archives the game writes (see
@@ -23,9 +24,9 @@
 import { randomInt } from 'node:crypto';
 import { assetName, classPathsInNames, InstallDir } from './class-paths.ts';
 import {
-  clusterData, clusterEntries, createClusterTree, DEFAULT_EXPIRES_IN, defaultOwner, itemIds, randomItemId,
+  clusterData, clusterEntries, createClusterTree, type ItemOwner, itemIds, randomItemId, resolveOwner, uploadTiming,
 } from './cluster.ts';
-import { colorName, isKnownColor, REGIONS, storedColorSetName } from './colors.ts';
+import { COLOR_LINEAR, colorName, isKnownColor, REGIONS, storedColorSetName } from './colors.ts';
 import { type MaxStatus, MaxStatusEstimator } from './creature-stats.ts';
 import { SaveEditor } from './editor.ts';
 import { toInlineArchive } from './inline.ts';
@@ -707,7 +708,7 @@ export function addDino(
   };
 }
 
-// ---------------------------------------------------------------- recolouring uploads
+// ---------------------------------------------------------------- recolouring uploads and souls
 
 export interface Recolor {
   /** Colour ID per region (0..5); regions left out keep their colour. 0 makes a region unused. */
@@ -728,39 +729,8 @@ export interface Recolored {
   names: number[];
 }
 
-/**
- * Sets the colours of an uploaded creature (ArkTamedDinosData) in its DinoData archive. Only
- * ColorSetIndices (and with names 'game' the matching ColorSetNames) change; DinoIDs, upload time and
- * every other byte stay. The game spawns the creature from this archive on download. The tree passed in
- * is changed.
- */
-export function recolorDino(
-  c: TreeContainer, which: { index?: number; dinoId?: [number, number] }, r: Recolor,
-): { tree: TreeContainer; recolored: Recolored } {
-  const entries = clusterEntries(c, 'ArkTamedDinosData');
-  let index: number;
-  if (which.index !== undefined) {
-    if (!entries[which.index]) throw new RangeError(`no uploaded creature at index ${which.index} (${entries.length} in the file)`);
-    index = which.index;
-  } else if (which.dinoId) {
-    const want = which.dinoId.join(':');
-    const found = entries.flatMap((e, i) => (`${num(e, 'DinoID1')}:${num(e, 'DinoID2')}` === want ? [i] : []));
-    if (found.length !== 1) throw new RangeError(`DinoID ${want}: ${found.length} uploaded creatures with this id`);
-    index = found[0];
-  } else {
-    throw new RangeError('give the index or the DinoID of the uploaded creature');
-  }
-  const entry = entries[index];
-  const dataProp = findProperty(entry, 'DinoData');
-  const data = dataProp?.value;
-  const a = Buffer.isBuffer(data) ? readCreatureArchive(data) : null;
-  if (!dataProp || !a) throw new RangeError(`ArkTamedDinosData[${index}]: no creature in DinoData`);
-  if (!writeContainerTree(a.tree).equals(data as Buffer)) throw new RangeError(`ArkTamedDinosData[${index}]: the creature does not round-trip; refusing to change it`);
-  const dinoId = creatureId(a);
-  if (`${num(entry, 'DinoID1')}:${num(entry, 'DinoID2')}` !== dinoId.join(':')) {
-    throw new RangeError(`ArkTamedDinosData[${index}]: DinoID of the entry and of the creature differ`);
-  }
-
+/** The requested colours as [region, id] pairs, checked. */
+function requestedColors(r: Recolor): (readonly [number, number])[] {
   const want = Object.entries(r.colors).map(([k, v]) => [Number(k), v] as const);
   if (!want.length) throw new RangeError('no colours given');
   for (const [region, id] of want) {
@@ -768,7 +738,21 @@ export function recolorDino(
     if (!Number.isInteger(id) || id < 0 || id > 255) throw new RangeError(`region ${region}: colour must be 0..255, got ${id}`);
     if (!r.anyColor && !isKnownColor(id)) throw new RangeError(`region ${region}: ${id} is no ASE colour (0, 1-100, 201-226)`);
   }
+  return want;
+}
 
+/**
+ * Sets ColorSetIndices (and with names 'game' the matching ColorSetNames) in a creature archive and
+ * returns the new archive bytes. Refuses archives that do not round-trip.
+ */
+function recolorArchive(
+  data: Buffer, r: Recolor, where: string,
+): { bytes: Buffer; dinoId: [number, number]; cls: string; before: number[]; after: number[]; names: number[] } {
+  const a = readCreatureArchive(data);
+  if (!a) throw new RangeError(`${where}: no creature`);
+  if (!writeContainerTree(a.tree).equals(data)) throw new RangeError(`${where}: the creature does not round-trip; refusing to change it`);
+  const want = requestedColors(r);
+  const dinoId = creatureId(a);
   const props = a.creature.props;
   const before = creatureColors(a);
   const names: number[] = [];
@@ -812,8 +796,208 @@ export function recolorDino(
   if (!check || creatureId(check).join(':') !== dinoId.join(':') || creatureColors(check).join(',') !== after.join(',')) {
     throw new Error('the recoloured creature does not read back');
   }
+  return { bytes, dinoId, cls: a.creature.cls ?? '', before, after, names };
+}
+
+/**
+ * Sets the colours of an uploaded creature (ArkTamedDinosData) in its DinoData archive. Only
+ * ColorSetIndices (and with names 'game' the matching ColorSetNames) change; DinoIDs, upload time and
+ * every other byte stay. The game spawns the creature from this archive on download. The tree passed in
+ * is changed.
+ */
+export function recolorDino(
+  c: TreeContainer, which: { index?: number; dinoId?: [number, number] }, r: Recolor,
+): { tree: TreeContainer; recolored: Recolored } {
+  const entries = clusterEntries(c, 'ArkTamedDinosData');
+  let index: number;
+  if (which.index !== undefined) {
+    if (!entries[which.index]) throw new RangeError(`no uploaded creature at index ${which.index} (${entries.length} in the file)`);
+    index = which.index;
+  } else if (which.dinoId) {
+    const want = which.dinoId.join(':');
+    const found = entries.flatMap((e, i) => (`${num(e, 'DinoID1')}:${num(e, 'DinoID2')}` === want ? [i] : []));
+    if (found.length !== 1) throw new RangeError(`DinoID ${want}: ${found.length} uploaded creatures with this id`);
+    index = found[0];
+  } else {
+    throw new RangeError('give the index or the DinoID of the uploaded creature');
+  }
+  const entry = entries[index];
+  const dataProp = findProperty(entry, 'DinoData');
+  const data = dataProp?.value;
+  if (!dataProp || !Buffer.isBuffer(data) || !readCreatureArchive(data)) throw new RangeError(`ArkTamedDinosData[${index}]: no creature in DinoData`);
+  const peek = creatureId(readCreatureArchive(data)!);
+  if (`${num(entry, 'DinoID1')}:${num(entry, 'DinoID2')}` !== peek.join(':')) {
+    throw new RangeError(`ArkTamedDinosData[${index}]: DinoID of the entry and of the creature differ`);
+  }
+  const { bytes, dinoId, cls, before, after, names } = recolorArchive(data, r, `ArkTamedDinosData[${index}]`);
   dataProp.value = bytes;
-  return { tree: c, recolored: { index, dinoId, cls: a.creature.cls ?? '', before, after, names } };
+  return { tree: c, recolored: { index, dinoId, cls, before, after, names } };
+}
+
+// Dino Storage v2 keeps the colours of a soul four times. Only the creature archive counts for the
+// creature that comes out (the release spawns it from the archive and does not set colours again,
+// docs/30 of ark-server); the other three are what the soul shows:
+//   ByteArrays[0]  the creature archive
+//   ByteArrays[6]  six bytes, one colour ID per region ("Color Bytes", the coloured icon)
+//   texts          "14,-,-,-,21,19" (current colours, "-" or "0" for unused regions) and, after breeding,
+//                  "F84,-,-,-,-,M13" (F/M: inherited from the mother or the father)
+//   tooltip        CustomItemDescription: "Colors:</> <RichColor Color="r,g,b,1">[0:14]</> ...\n"
+// ByteArrays[1] is six bytes as well but holds something else (mostly zero).
+
+const SOUL_COLOR_BYTES = 6;
+
+export interface RecoloredSoul extends Omit<Recolored, 'index'> {
+  /** Position in ArkItems. */
+  item: number;
+  /** Texts of the soul that were rewritten (positions in CustomDataStrings). */
+  texts: number[];
+  /** Whether the colours in the tooltip were rewritten (false: the tooltip lists no colours). */
+  tooltip: boolean;
+}
+
+/** "F84,-,M13,..." → per region [prefix, number|'-'], or null if the text is no colour list of six regions. */
+function colorTokens(s: string | null): [string, string][] | null {
+  if (!s) return null;
+  const parts = s.split(',');
+  if (parts.length !== REGIONS) return null;
+  const out: [string, string][] = [];
+  for (const p of parts) {
+    const m = /^([FM]?)(\d{1,3}|-)$/.exec(p);
+    if (!m) return null;
+    out.push([m[1], m[2]]);
+  }
+  return out;
+}
+
+/** Rewrites a colour text of the soul if it lists exactly `before`; null if it is no such text. */
+export function recolorText(s: string | null, before: number[], after: number[]): string | null {
+  const tokens = colorTokens(s);
+  if (!tokens || tokens.some(([, v], i) => (v === '-' ? 0 : Number(v)) !== before[i])) return null;
+  // Current souls write "-" for an empty region, older ones "0".
+  const empty = !tokens.some(([, v]) => v === '-') && tokens.some(([, v]) => v === '0') ? '0' : '-';
+  return tokens.map(([prefix, v], i) => {
+    if (after[i] === before[i]) return prefix + v;
+    if (after[i] === 0) return empty;
+    return (v === '-' || v === '0' ? '' : prefix) + String(after[i]);
+  }).join(',');
+}
+
+const TOOLTIP_COLORS = /(Colors:<\/> )(.*?)(\\n|$)/;
+// Coloured entries "<RichColor Color="r,g,b,1">[0:14]</>"; older souls also list every region, the
+// empty ones bare: "[1:0]", or "[1:N]" where the species has no such region.
+const TOOLTIP_ENTRY = /<RichColor Color="([^"]*)">\[(\d):(\d{1,3}|N)\]<\/>|\[(\d):(\d{1,3}|N)\]/g;
+
+/** Rewrites the colour list of the tooltip; null if it has none or it looks different. */
+export function recolorTooltip(desc: string, before: number[], after: number[]): string | null {
+  const m = TOOLTIP_COLORS.exec(desc);
+  if (!m) return null;
+  const entries = [...m[2].matchAll(TOOLTIP_ENTRY)].map((e) => ({
+    region: Number(e[2] ?? e[4]), id: e[3] ?? e[5], color: e[1] as string | undefined, raw: e[0],
+  }));
+  if (m[2].replace(TOOLTIP_ENTRY, '').trim() !== '') return null;
+  const listsAll = entries.some((e) => e.color === undefined);
+  const known = new Map(entries.flatMap((e) => (e.color ? [[e.id, e.color] as const] : [])));
+  const byRegion = new Map(entries.map((e) => [e.region, e.raw]));
+  for (let region = 0; region < REGIONS; region++) {
+    if (after[region] === before[region]) continue;
+    const id = after[region];
+    if (id === 0) {
+      if (listsAll) byRegion.set(region, `[${region}:0]`);
+      else byRegion.delete(region);
+      continue;
+    }
+    const linear = COLOR_LINEAR[id];
+    const color = known.get(String(id)) ?? (linear ? `${linear},1` : '1.0,1.0,1.0,1');
+    byRegion.set(region, `<RichColor Color="${color}">[${region}:${id}]</>`);
+  }
+  const list = [...byRegion.entries()].sort((a, b) => a[0] - b[0]).map((e) => e[1]).join(' ');
+  return desc.slice(0, m.index) + m[1] + list + m[3] + desc.slice(m.index + m[0].length);
+}
+
+/** The ArkItems entries that are filled Dino Storage souls, with the DinoID of the creature inside. */
+function soulsIn(c: TreeContainer): { item: number; dinoId: string }[] {
+  const out: { item: number; dinoId: string }[] = [];
+  clusterEntries(c, 'ArkItems').forEach((e, i) => {
+    const info = findProperty(e, 'ArkTributeItem')?.value;
+    if (!Array.isArray(info)) return;
+    const arch = (findProperty(info as Property[], 'ItemArchetype')?.value as { path?: string | null } | undefined)?.path ?? null;
+    if (itemKind(arch) !== 'soul') return;
+    for (const x of creaturesInItemInfo(info as Property[])) out.push({ item: i, dinoId: creatureId(readCreatureArchive(x.data)!).join(':') });
+  });
+  return out;
+}
+
+/** Uploaded creatures and souls in a cluster file with this DinoID. */
+export function findCreature(c: TreeContainer, dinoId: [number, number]): { uploads: number[]; souls: number[] } {
+  const want = dinoId.join(':');
+  const uploads = clusterEntries(c, 'ArkTamedDinosData').flatMap((e, i) => (`${num(e, 'DinoID1')}:${num(e, 'DinoID2')}` === want ? [i] : []));
+  return { uploads, souls: soulsIn(c).filter((s) => s.dinoId === want).map((s) => s.item) };
+}
+
+/**
+ * Sets the colours of the creature in an uploaded Dino Storage v2 soul (ArkItems): the archive, from
+ * which the release spawns it, and the colour bytes, colour texts and tooltip the soul shows. Remaining
+ * mating cooldown, DinoIDs and everything else stay. Cryopods are refused: after a download their
+ * release rolls a new mating cooldown anyway (docs/30 of ark-server). The tree passed in is changed.
+ */
+export function recolorSoul(
+  c: TreeContainer, which: { item?: number; dinoId?: [number, number] }, r: Recolor,
+): { tree: TreeContainer; recolored: RecoloredSoul } {
+  const items = clusterEntries(c, 'ArkItems');
+  let item: number;
+  if (which.item !== undefined) {
+    if (!items[which.item]) throw new RangeError(`no uploaded item at index ${which.item} (${items.length} in the file)`);
+    item = which.item;
+  } else if (which.dinoId) {
+    const found = findCreature(c, which.dinoId).souls;
+    if (found.length !== 1) throw new RangeError(`DinoID ${which.dinoId.join(':')}: ${found.length} souls with this id`);
+    item = found[0];
+  } else {
+    throw new RangeError('give the item index or the DinoID of the creature in the soul');
+  }
+  const info = findProperty(items[item], 'ArkTributeItem')?.value;
+  if (!Array.isArray(info)) throw new RangeError(`ArkItems[${item}]: no ArkTributeItem`);
+  const list = info as Property[];
+  const arch = (findProperty(list, 'ItemArchetype')?.value as { path?: string | null } | undefined)?.path ?? null;
+  const kind = itemKind(arch);
+  if (kind === 'cryopod') throw new RangeError(`ArkItems[${item}] is a cryopod: not supported, its release rolls a new mating cooldown after a download`);
+  if (kind !== 'soul') throw new RangeError(`ArkItems[${item}] is no Dino Storage soul (${arch ?? 'no class'})`);
+
+  const found = creaturesInItemInfo(list);
+  if (found.length !== 1) throw new RangeError(`ArkItems[${item}]: ${found.length} creatures in the soul, expected 1`);
+  const [di, bi] = found[0].path;
+  const data = (findProperty(list, 'CustomItemDatas')!.value as Property[][])[di];
+  if (bi !== 0) throw new RangeError(`ArkItems[${item}]: the creature is not in ByteArrays[0]; unknown soul layout`);
+  const arrays = findProperty(findProperty(data, 'CustomDataBytes')!.value as Property[], 'ByteArrays')!.value as Property[][];
+  const archiveProp = findProperty(arrays[0], 'Bytes')!;
+  const colorProp = arrays[SOUL_COLOR_BYTES] ? findProperty(arrays[SOUL_COLOR_BYTES], 'Bytes') : undefined;
+  const oldColors = creatureColors(readCreatureArchive(archiveProp.value as Buffer)!);
+  if (!colorProp || !Buffer.isBuffer(colorProp.value) || colorProp.value.length !== REGIONS || [...colorProp.value].join(',') !== oldColors.join(',')) {
+    throw new RangeError(`ArkItems[${item}]: ByteArrays[${SOUL_COLOR_BYTES}] does not hold the colours; unknown soul layout`);
+  }
+
+  const res = recolorArchive(archiveProp.value as Buffer, r, `ArkItems[${item}]`);
+  archiveProp.value = res.bytes;
+  colorProp.value = Buffer.from(res.after);
+
+  const texts: number[] = [];
+  const strings = findProperty(data, 'CustomDataStrings');
+  if (strings && Array.isArray(strings.value)) {
+    strings.value = (strings.value as (string | null)[]).map((s, i) => {
+      const t = recolorText(s, res.before, res.after);
+      if (t === null) return s;
+      texts.push(i);
+      return t;
+    });
+  }
+  const desc = findProperty(list, 'CustomItemDescription');
+  const tooltip = typeof desc?.value === 'string' ? recolorTooltip(desc.value, res.before, res.after) : null;
+  if (tooltip !== null) desc!.value = tooltip;
+
+  return {
+    tree: c,
+    recolored: { item, dinoId: res.dinoId, cls: res.cls, before: res.before, after: res.after, names: res.names, texts, tooltip: tooltip !== null },
+  };
 }
 
 /** Colours with their names for output: [{ region, id, name }]. */
@@ -823,13 +1007,14 @@ export const describeColors = (ids: number[]): { region: number; id: number; nam
 // ---------------------------------------------------------------- copying items
 
 export interface CopyItem {
-  /** OwnerPlayerDataID. Default: the PlayerDataID of the target file (see defaultOwner). */
-  owner?: bigint | number | string;
+  /** OwnerPlayerDataID, see ItemOwner: 0 (default, waits at the obelisk), 'player' (moves into the inventory) or an ID. */
+  owner?: ItemOwner;
   /** Replaces SteamIDs (17 digits, 7656119...) in CustomDataStrings, e.g. the owner of a Dino Storage soul. */
   steamId?: string;
+  /** UploadTime, validUntil, lifetime and expiration as for NewItem (see uploadTiming). */
   uploadTime?: number;
-  /** ExpirationTimeUTC = uploadTime + expiresIn. Default 86400. */
-  expiresIn?: number;
+  validUntil?: number;
+  lifetime?: number;
   expiration?: number;
   /** Keep the DinoIDs of creatures inside. Default: new random IDs. */
   keepIds?: boolean;
@@ -845,6 +1030,7 @@ export interface CopiedItem {
   itemId: [number, number];
   uploadTime: number;
   expiration: number;
+  validUntil: number;
   owner: string;
   /** bAllowRemovalFromInventory of the source and of the copy (null: not in the item). */
   allowRemovalBefore: boolean | null;
@@ -894,12 +1080,10 @@ export function copyItem(
   setNumber(id as Property[], 'ItemID2', itemId[1]);
 
   const now = opts.now ?? Math.floor(Date.now() / 1000);
-  const uploadTime = o.uploadTime ?? now;
-  const expiration = o.expiration ?? uploadTime + (o.expiresIn ?? DEFAULT_EXPIRES_IN);
-  checkU32(expiration, 'expiration');
+  const { uploadTime, expiration, validUntil } = uploadTiming(o, now);
   if (findProperty(entry, 'UploadTime')) setNumber(entry, 'UploadTime', uploadTime);
   if (findProperty(list, 'ExpirationTimeUTC')) setNumber(list, 'ExpirationTimeUTC', expiration);
-  const owner = o.owner === undefined ? defaultOwner(c) : BigInt(o.owner);
+  const owner = resolveOwner(c, o.owner);
   if (findProperty(list, 'OwnerPlayerDataID')) findProperty(list, 'OwnerPlayerDataID')!.value = owner;
   if (o.steamId !== undefined && !STEAM_ID.test(o.steamId)) throw new RangeError(`not a SteamID64: ${o.steamId}`);
   const flag = findProperty(list, 'bAllowRemovalFromInventory')?.value;
@@ -946,6 +1130,6 @@ export function copyItem(
   items.push(entry);
   return {
     tree,
-    added: { index: items.length - 1, itemId, uploadTime, expiration, owner: owner.toString(), allowRemovalBefore, allowRemoval, creatures },
+    added: { index: items.length - 1, itemId, uploadTime, expiration, validUntil, owner: owner.toString(), allowRemovalBefore, allowRemoval, creatures },
   };
 }

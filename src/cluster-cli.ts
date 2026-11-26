@@ -4,9 +4,9 @@ import { chownSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readd
 import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { InstallDir } from './class-paths.ts';
-import { addItem, clusterEntries, type NewItem, readCluster, readClusterTree, writeClusterTree } from './cluster.ts';
+import { addItem, clusterEntries, DEFAULT_LIFETIME, type NewItem, readCluster, readClusterTree, splitQuantity, writeClusterTree } from './cluster.ts';
 import {
-  addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource, describeColors, recolorDino,
+  addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource, describeColors, findCreature, recolorDino, recolorSoul,
 } from './cluster-dinos.ts';
 import type { MaxStatus } from './creature-stats.ts';
 import { readContainerTree, type TreeNotes, writeContainerTree } from './tree.ts';
@@ -24,8 +24,9 @@ export const CLUSTER_USAGE = `Cluster files (clusters/<ClusterId>/<SteamID>):
                                                      add a creature to the uploads (new DinoIDs, upload time now)
   ark-export cluster copy-item <file> --from FILE --index N (--out FILE | --in-place --backup DIR) [options]
                                                      copy an uploaded item (e.g. a filled soul) with new ItemID and owner
-  ark-export cluster recolor <file> (--dino A:B | --index N) --colors R=ID,... (--out FILE | --in-place --backup DIR)
-                                                     set the colour regions of an uploaded creature
+  ark-export cluster recolor <file> (--dino A:B | --index N | --item N) --colors R=ID,... (--out FILE | --in-place --backup DIR)
+                                                     set the colour regions of an uploaded creature or of the
+                                                     creature in an uploaded Dino Storage v2 soul
 
 add-item options:
   --blueprint BP        item class: Blueprint'/Game/.../X.X', /Game/.../X.X_C or /Game/.../X
@@ -33,17 +34,25 @@ add-item options:
                         hypothermal, weight, hyperthermal
   --quality N           ItemQualityIndex 0-5 (primitive ... ascendant), default 0
   --rating R            ItemRating, default 0
-  --durability D        ItemDurability (current durability), default 0
-  --quantity N          number of pieces, default 1 (written as ItemQuantity N-1, as the game does)
+  --durability D        ItemDurability: current durability as an absolute value, default 0; not
+                        clamped by the game, so stay at or below the item's maximum
+  --quantity N          number of pieces, default 1 (written as ItemQuantity N-1, as the game does);
+                        more than the stack size is cut on download (1000 ingots gave 300)
+  --stack N             split --quantity into entries of at most N pieces (then "added" is a list)
   --colors A,B,...      ItemColorID 0..5
   --blueprint-copy      upload as blueprint
   --disallow-removal    write bAllowRemovalFromInventory=false (default true; with false ARK refuses
                         the download)
   --custom-name S, --custom-description S, --crafter S, --tribe S, --ammo N
-  --owner ID            OwnerPlayerDataID, default: the player's PlayerDataID from the file
-  --upload-time T       unix seconds, default now
-  --expires-in S        seconds after the upload time, default 86400
-  --expires-at T        absolute expiry: unix seconds or ISO date (wins over --expires-in)
+  --owner 0|player|ID   OwnerPlayerDataID. 0 (default, as the game writes its own uploads): the item
+                        waits in the obelisk list. player: the PlayerDataID from the file; ARK moves the
+                        item into the inventory as soon as the player opens an obelisk or transmitter
+  --valid-for S         downloadable for S seconds from now (sets the upload time to now + S - lifetime)
+  --valid-until T       downloadable until T: unix seconds or ISO date
+  --upload-time T       unix seconds or ISO date, default now (instead of --valid-for/--valid-until)
+  --lifetime S          the server's TributeItemExpirationSeconds, default 86400; the obelisk hands an
+                        upload out until upload time + lifetime and ignores ExpirationTimeUTC
+  --expires-in S, --expires-at T   old names of --valid-for and --valid-until
   --item-id A:B         ItemID1:ItemID2, default random and unique within the file
   --out FILE            write the result to FILE (--force overwrites it)
   --in-place            replace <file>; needs --backup DIR for a copy of the original
@@ -68,13 +77,13 @@ add-dino options:
 copy-item options:
   --from FILE           cluster file holding the item
   --index N             position in its ArkItems (see \`cluster show FILE\`)
-  --owner ID            OwnerPlayerDataID, default: the player's PlayerDataID from <file>
+  --owner 0|player|ID   OwnerPlayerDataID as for add-item, default 0
   --steam-id ID         replace SteamIDs in the item's texts (owner of a Dino Storage soul),
                         default: the name of <file> if it is a SteamID
   --keep-ids            keep the DinoIDs of creatures inside; default: new random IDs
   --keep-removal-flag   keep bAllowRemovalFromInventory of the source; default: set it to true
                         (with false ARK refuses the download)
-  --upload-time T, --expires-in S, --expires-at T   as for add-item
+  --valid-for S, --valid-until T, --upload-time T, --lifetime S   as for add-item
 
 recolor options:
   --dino A:B            DinoID1:DinoID2 of the uploaded creature (see \`cluster dinos FILE\`)
@@ -98,7 +107,10 @@ function show(file: string, full: boolean): void {
   print({
     file, bytes: buf.length, hasData: v.hasData, objectName: v.objectName, notes: v.notes,
     items: v.items.map((it) => {
-      const times = { uploaded: iso(it.uploadTime), expires: iso(it.expiration), expired: typeof it.expiration === 'number' && it.expiration < now };
+      // The obelisk hands an upload out until UploadTime + TributeItemExpirationSeconds (ASE default 86400)
+      // and ignores ExpirationTimeUTC (game test 2026-11-26).
+      const until = typeof it.uploadTime === 'number' ? it.uploadTime + DEFAULT_LIFETIME : null;
+      const times = { uploaded: iso(it.uploadTime), validUntil: iso(until), expired: until !== null && until < now };
       if (full) return { ...it, ...times };
       const { info: _info, ...rest } = it;
       return { ...rest, ...times };
@@ -393,6 +405,25 @@ function addDinoCommand(args: string[]): number {
   return 0;
 }
 
+const TIMING_OPTIONS = {
+  'upload-time': { type: 'string' }, 'valid-for': { type: 'string' }, 'valid-until': { type: 'string' },
+  lifetime: { type: 'string' }, 'expires-in': { type: 'string' }, 'expires-at': { type: 'string' },
+} as const;
+
+/** --valid-for/--valid-until (old names --expires-in/--expires-at), --upload-time and --lifetime. */
+function timing(values: Record<string, unknown>, now = Math.floor(Date.now() / 1000)): { uploadTime?: number; validUntil?: number; lifetime?: number } {
+  const get = (k: string): string | undefined => (typeof values[k] === 'string' ? values[k] as string : undefined);
+  const validFor = get('valid-for') ?? get('expires-in');
+  const until = get('valid-until') ?? get('expires-at');
+  const given = [validFor, until, get('upload-time')].filter((v) => v !== undefined).length;
+  if (given > 1) throw new Error('give only one of --valid-for, --valid-until and --upload-time');
+  return {
+    uploadTime: unixTime(get('upload-time'), 'upload-time'),
+    validUntil: validFor !== undefined ? now + number(validFor, 'valid-for')! : unixTime(until, 'valid-until'),
+    lifetime: number(get('lifetime'), 'lifetime'),
+  };
+}
+
 function copyItemCommand(args: string[]): number {
   const { values, positionals } = parseArgs({
     args,
@@ -400,8 +431,7 @@ function copyItemCommand(args: string[]): number {
     options: {
       from: { type: 'string' }, index: { type: 'string' }, owner: { type: 'string' }, 'steam-id': { type: 'string' },
       'keep-ids': { type: 'boolean', default: false }, 'keep-removal-flag': { type: 'boolean', default: false },
-      'upload-time': { type: 'string' }, 'expires-in': { type: 'string' },
-      'expires-at': { type: 'string' }, ...OUTPUT_OPTIONS,
+      ...TIMING_OPTIONS, ...OUTPUT_OPTIONS,
     },
   });
   if (positionals.length !== 1) throw new Error('copy-item needs exactly one cluster file');
@@ -419,8 +449,7 @@ function copyItemCommand(args: string[]): number {
   const itemsBefore = clusterEntries(tree, 'ArkItems').length;
   const { tree: changed, added } = copyItem(tree, entry, {
     owner: values.owner, steamId, keepIds: values['keep-ids'], allowRemoval: values['keep-removal-flag'] ? null : true,
-    uploadTime: unixTime(values['upload-time'], 'upload-time'),
-    expiresIn: number(values['expires-in'], 'expires-in'), expiration: unixTime(values['expires-at'], 'expires-at'),
+    ...timing(values),
   });
   const after = writeClusterTree(changed);
   const check = readCluster(after);
@@ -437,7 +466,7 @@ function copyItemCommand(args: string[]): number {
     file: target, backup, source: { file: from, index: Number(values.index), blueprint: readCluster(readFileSync(from)).items[Number(values.index)].blueprint },
     before: { bytes: before.length, sha256: sha256(before), items: itemsBefore },
     after: { bytes: after.length, sha256: sha256(after), items: check.items.length },
-    added: { ...added, steamId: steamId ?? null, uploaded: iso(added.uploadTime), expires: iso(added.expiration) },
+    added: { ...added, steamId: steamId ?? null, uploaded: iso(added.uploadTime), validUntilIso: iso(added.validUntil) },
   });
   return 0;
 }
@@ -458,12 +487,14 @@ function recolorCommand(args: string[]): number {
     args,
     allowPositionals: true,
     options: {
-      dino: { type: 'string' }, index: { type: 'string' }, colors: { type: 'string' }, names: { type: 'string', default: 'game' },
-      'any-color': { type: 'boolean', default: false }, ...OUTPUT_OPTIONS,
+      dino: { type: 'string' }, index: { type: 'string' }, item: { type: 'string' }, colors: { type: 'string' },
+      names: { type: 'string', default: 'game' }, 'any-color': { type: 'boolean', default: false }, ...OUTPUT_OPTIONS,
     },
   });
   if (positionals.length !== 1) throw new Error('recolor needs exactly one cluster file');
-  if ((values.dino === undefined) === (values.index === undefined)) throw new Error('give either --dino A:B or --index N');
+  if ([values.dino, values.index, values.item].filter((v) => v !== undefined).length !== 1) {
+    throw new Error('give exactly one of --dino A:B, --index N or --item N');
+  }
   if (!values.colors) throw new Error('--colors is required');
   if (values.names !== 'game' && values.names !== 'keep') throw new Error('--names must be game or keep');
   checkOutput(values);
@@ -473,25 +504,59 @@ function recolorCommand(args: string[]): number {
   const before = readTarget(src, values['in-place']);
   const tree = readClusterTree(before);
   if (!tree) throw new Error(`${src} is empty: no uploaded creatures`);
-  const dinosBefore = clusterEntries(tree, 'ArkTamedDinosData').length;
-  const { tree: changed, recolored } = recolorDino(
-    tree,
-    values.dino !== undefined ? { dinoId: pair(values.dino, '--dino') } : { index: number(values.index, 'index') },
-    { colors: parseColors(values.colors), names: values.names, anyColor: values['any-color'] },
-  );
+  const r = { colors: parseColors(values.colors), names: values.names as 'game' | 'keep', anyColor: values['any-color'] };
+  const dinoId = values.dino !== undefined ? pair(values.dino, '--dino') : undefined;
+  let soul = values.item !== undefined;
+  if (dinoId) {
+    const { uploads, souls } = findCreature(tree, dinoId);
+    if (uploads.length + souls.length !== 1) {
+      throw new Error(`DinoID ${dinoId.join(':')}: ${uploads.length} uploaded creatures and ${souls.length} souls with this id, expected exactly one`);
+    }
+    soul = souls.length === 1;
+  }
+  const sourcesBefore = creaturesInCluster(tree).map((x) => x.where);
+
+  let report: Record<string, unknown>;
+  let where: string;
+  let changed;
+  let after0: number[];
+  let id: [number, number];
+  if (soul) {
+    const res = recolorSoul(tree, dinoId ? { dinoId } : { item: number(values.item, 'item') }, r);
+    changed = res.tree;
+    const x = res.recolored;
+    where = `ArkItems[${x.item}] `;
+    after0 = x.after;
+    id = x.dinoId;
+    report = {
+      soul: { item: x.item, dinoId: x.dinoId, cls: x.cls },
+      colors: { before: describeColors(x.before), after: describeColors(x.after) },
+      namesRewritten: x.names, colorBytes: true, textsRewritten: x.texts, tooltipRewritten: x.tooltip,
+    };
+  } else {
+    const res = recolorDino(tree, dinoId ? { dinoId } : { index: number(values.index, 'index') }, r);
+    changed = res.tree;
+    const x = res.recolored;
+    where = `ArkTamedDinosData[${x.index}]`;
+    after0 = x.after;
+    id = x.dinoId;
+    report = {
+      dino: { index: x.index, dinoId: x.dinoId, cls: x.cls },
+      colors: { before: describeColors(x.before), after: describeColors(x.after) },
+      namesRewritten: x.names,
+    };
+  }
   const after = writeClusterTree(changed);
-  const check = creaturesInCluster(readClusterTree(after)).filter((s) => s.kind === 'upload');
-  const mine = check.find((s) => s.where === `ArkTamedDinosData[${recolored.index}]`);
-  if (check.length !== dinosBefore || !mine || mine.info.dinoId.join(':') !== recolored.dinoId.join(':') || mine.info.colors.join(',') !== recolored.after.join(',')) {
+  const check = creaturesInCluster(readClusterTree(after));
+  const mine = check.filter((x) => (soul ? x.where.startsWith(where) : x.where === where));
+  if (check.map((x) => x.where).join('|') !== sourcesBefore.join('|') || mine.length !== 1
+    || mine[0].info.dinoId.join(':') !== id.join(':') || mine[0].info.colors.join(',') !== after0.join(',')) {
     throw new Error('the written file does not read back as expected');
   }
   if (!writeClusterTree(readClusterTree(after)).equals(after)) throw new Error('the written file does not round-trip');
   const { target, backup } = commit(src, before, after, values);
   print({
-    file: target, backup,
-    dino: { index: recolored.index, dinoId: recolored.dinoId, cls: recolored.cls },
-    colors: { before: describeColors(recolored.before), after: describeColors(recolored.after) },
-    namesRewritten: recolored.names,
+    file: target, backup, ...report,
     before: { bytes: before.length, sha256: sha256(before) },
     after: { bytes: after.length, sha256: sha256(after) },
   });
@@ -508,8 +573,7 @@ function addItemCommand(args: string[]): number {
       'blueprint-copy': { type: 'boolean', default: false }, 'disallow-removal': { type: 'boolean', default: false },
       'custom-name': { type: 'string' },
       'custom-description': { type: 'string' }, crafter: { type: 'string' }, tribe: { type: 'string' }, ammo: { type: 'string' },
-      owner: { type: 'string' }, 'upload-time': { type: 'string' }, 'expires-in': { type: 'string' },
-      'expires-at': { type: 'string' }, 'item-id': { type: 'string' }, ...OUTPUT_OPTIONS,
+      owner: { type: 'string' }, stack: { type: 'string' }, 'item-id': { type: 'string' }, ...TIMING_OPTIONS, ...OUTPUT_OPTIONS,
     },
   });
   if (positionals.length !== 1) throw new Error('add-item needs exactly one cluster file');
@@ -538,22 +602,29 @@ function addItemCommand(args: string[]): number {
     crafterName: values.crafter,
     crafterTribe: values.tribe,
     owner: values.owner,
-    uploadTime: unixTime(values['upload-time'], 'upload-time'),
-    expiresIn: number(values['expires-in'], 'expires-in'),
-    expiration: unixTime(values['expires-at'], 'expires-at'),
+    ...timing(values),
     itemId,
   };
+  const stack = number(values.stack, 'stack');
+  const pieces = stack === undefined ? [item.quantity ?? 1] : splitQuantity(item.quantity ?? 1, stack);
+  if (itemId && pieces.length > 1) throw new Error('--item-id cannot be used when --stack splits the quantity');
 
   const before = readTarget(src, values['in-place']);
   const tree = readClusterTree(before);
   const itemsBefore = clusterEntries(tree, 'ArkItems').length;
-  const { tree: changed, added } = addItem(tree, item);
-  const after = writeClusterTree(changed);
+  let changed = tree;
+  const added: ReturnType<typeof addItem>['added'][] = [];
+  for (const quantity of pieces) {
+    const r = addItem(changed, { ...item, quantity });
+    changed = r.tree;
+    added.push(r.added);
+  }
+  const after = writeClusterTree(changed!);
 
-  // The result has to read back with the new item last and everything else unchanged.
+  // The result has to read back with the new items last and everything else unchanged.
   const check = readCluster(after);
-  const last = check.items.at(-1);
-  if (check.items.length !== itemsBefore + 1 || !last || last.itemId.join(':') !== added.itemId.join(':')) {
+  const tail = check.items.slice(itemsBefore).map((i) => i.itemId.join(':'));
+  if (check.items.length !== itemsBefore + added.length || tail.join(',') !== added.map((a) => a.itemId.join(':')).join(',')) {
     throw new Error('the written file does not read back as expected');
   }
   if (!writeClusterTree(readClusterTree(after)).equals(after)) throw new Error('the written file does not round-trip');
@@ -563,10 +634,12 @@ function addItemCommand(args: string[]): number {
     file: target, backup,
     before: { bytes: before.length, sha256: sha256(before), items: itemsBefore },
     after: { bytes: after.length, sha256: sha256(after), items: check.items.length },
-    added: { ...added, uploaded: iso(added.uploadTime), expires: iso(added.expiration) },
+    added: stack === undefined ? describe(added[0]) : added.map(describe),
   });
   return 0;
 }
+
+const describe = (a: ReturnType<typeof addItem>['added']) => ({ ...a, uploaded: iso(a.uploadTime), validUntilIso: iso(a.validUntil) });
 
 export async function clusterCommand(argv: string[]): Promise<number> {
   const [sub, ...args] = argv;
