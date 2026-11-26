@@ -1,5 +1,5 @@
 {
-  "database": "@/etc/ark-manager/db.url",
+  "database": "@/etc/ark-rcon/db.url",
   "arkmanager": {
     "instances": "/etc/arkmanager/instances",
     "exclude": [
