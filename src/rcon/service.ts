@@ -1,9 +1,11 @@
-// The service: one RCON connection per map, player tracking via ListPlayers, chat and game log from the log files,
+// The service: one RCON connection per map, player tracking via ListPlayers, chat and game log from the log files
+// (ServerGame log, and the JSON chat log for tribe and alliance chat),
 // cluster-wide bans, console, saved and scheduled commands, triggers, Discord relay and an audit log of every action.
 import { EventEmitter } from 'node:events';
 import { RconClient, RconError, parseListPlayers, toArkAscii } from './rcon.ts';
 import { checkCommand, quoteArg, type PolicyResult } from './policy.ts';
 import { CommandLogSource, GameLogFollower, parseLogLine, type FollowState, type LogEvent, type LogSource } from './gamelog.ts';
+import { ChatDeduplicator, ChatLogFollower, chatLineKey, keepChatLogEntry, type ChatLogItem, type ChatLogState } from './chatlog.ts';
 import { Store, type BanRow, type EventRow } from './store.ts';
 import { can, type Permission, type Role } from './auth.ts';
 import { DiscordRelay, escapeDiscord } from './discord.ts';
@@ -73,6 +75,9 @@ class MapRuntime {
   nextAttempt = 0;
   online = new Map<string, OnlinePlayer>();
   log: LogSource | null = null;
+  chatLog: ChatLogFollower | null = null;
+  /** global and local chat arrive from both logs: the first copy wins */
+  chatDedup = new ChatDeduplicator();
   /** names from "joined"/"left" log lines (UTF-8) → time, to repair "?" names from RCON */
   logNames = new Map<string, number>();
   recentlyLeft = new Map<string, { steamId: string; ts: number }>();
@@ -136,6 +141,7 @@ export class RconService extends EventEmitter {
         rt.online.set(s.steam_id, { steamId: s.steam_id, name: s.name ?? s.steam_id, since: s.start_ts, lastWrite: 0 });
       }
       await this.startLog(rt);
+      await this.startChatLog(rt);
     }
     await this.reloadBans();
     await this.reloadAutomation();
@@ -166,7 +172,7 @@ export class RconService extends EventEmitter {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
-    for (const rt of this.maps.values()) { rt.log?.stop(); rt.client?.close(); }
+    for (const rt of this.maps.values()) { rt.log?.stop(); rt.chatLog?.stop(); rt.client?.close(); }
     this.discord.stop();
     await this.store.setState('heartbeat', String(Date.now())).catch(() => undefined);
     const extra = [...this.databases.values()];
@@ -380,10 +386,10 @@ export class RconService extends EventEmitter {
     return [...this.maps.values()].filter((rt) => rt.online.has(steamId)).map((rt) => rt.cfg.name);
   }
 
-  mapsStatus(): Array<{ name: string; title: string; role: string; status: MapStatus; error: string | null; lastPoll: number; players: OnlinePlayer[]; logSource: string; externalBufferReader: boolean }> {
+  mapsStatus(): Array<{ name: string; title: string; role: string; status: MapStatus; error: string | null; lastPoll: number; players: OnlinePlayer[]; logSource: string; chatLogSource: string; externalBufferReader: boolean }> {
     return [...this.maps.values()].map((rt) => ({
       name: rt.cfg.name, title: rt.cfg.title, role: rt.cfg.role, status: rt.status, error: rt.lastError, lastPoll: rt.lastPoll,
-      players: [...rt.online.values()], logSource: rt.cfg.logSource, externalBufferReader: rt.cfg.externalBufferReader,
+      players: [...rt.online.values()], logSource: rt.cfg.logSource, chatLogSource: rt.cfg.chatLogSource, externalBufferReader: rt.cfg.externalBufferReader,
     }));
   }
 
@@ -396,17 +402,7 @@ export class RconService extends EventEmitter {
     } else if (rt.cfg.logDir) {
       const saved = await this.store.getState(`log:${rt.cfg.name}`);
       const follower = new GameLogFollower(rt.cfg.logDir, saved ? JSON.parse(saved) as FollowState : null);
-      let pending: string | null = null;
-      let writing = false;
-      follower.on('state', (s: FollowState) => {
-        pending = JSON.stringify(s);
-        if (writing) return;
-        writing = true;
-        queueMicrotask(async () => {
-          while (pending) { const v = pending; pending = null; await this.store.setState(`log:${rt.cfg.name}`, v).catch(() => undefined); }
-          writing = false;
-        });
-      });
+      follower.on('state', this.stateWriter(`log:${rt.cfg.name}`));
       source = follower;
     } else {
       return;
@@ -421,6 +417,72 @@ export class RconService extends EventEmitter {
     // first read now, so "start at the end of the file" refers to the moment the service starts
     if (source instanceof GameLogFollower) await source.poll().catch((err) => this.emit('warning', `${rt.cfg.name} log: ${(err as Error).message}`));
     source.start();
+  }
+
+  /** Stores the newest read position under `key`, one write at a time, skipping positions overtaken meanwhile. */
+  private stateWriter(key: string): (state: unknown) => void {
+    let pending: string | null = null;
+    let writing = false;
+    return (state) => {
+      pending = JSON.stringify(state);
+      if (writing) return;
+      writing = true;
+      queueMicrotask(async () => {
+        while (pending) { const v = pending; pending = null; await this.store.setState(key, v).catch(() => undefined); }
+        writing = false;
+      });
+    };
+  }
+
+  /** The JSON chat log (LogChatMessages=True): all channels, of tribe and alliance chat only "!" commands. */
+  private async startChatLog(rt: MapRuntime): Promise<void> {
+    if (rt.cfg.chatLogSource !== 'file') return;
+    if (!rt.cfg.chatLogDir) { this.emit('warning', `${rt.cfg.name} chat log: no folder (set chatLogDir or logDir)`); return; }
+    const saved = await this.store.getState(`chatlog:${rt.cfg.name}`);
+    const follower = new ChatLogFollower(rt.cfg.chatLogDir, saved ? JSON.parse(saved) as ChatLogState : null);
+    follower.on('state', this.stateWriter(`chatlog:${rt.cfg.name}`));
+    let chain = Promise.resolve();
+    follower.on('entry', (item: ChatLogItem) => {
+      chain = chain.then(() => this.onChatLogEntry(rt, item)).catch((err) => { this.emit('warning', `${rt.cfg.name} chat log: ${(err as Error).message}`); });
+    });
+    follower.on('error', (err: Error) => this.emit('warning', `${rt.cfg.name} chat log: ${err.message}`));
+    rt.chatLog = follower;
+    // first read now: "skip what is there" refers to the moment the service starts
+    await follower.poll().catch((err) => this.emit('warning', `${rt.cfg.name} chat log: ${(err as Error).message}`));
+    follower.start();
+  }
+
+  /**
+   * One entry of the JSON chat log. The sender comes with its ID (SteamID64 on ASE, EOS ID on ASA), so no name lookup
+   * is needed. Tribe and alliance chat only get here as "!" commands; they are not sent to Discord.
+   */
+  async onChatLogEntry(rt: MapRuntime | string, item: ChatLogItem): Promise<void> {
+    if (typeof rt === 'string') rt = this.map(rt);
+    const e = item.entry;
+    if (!keepChatLogEntry(e)) return;                                   // the follower filters already; this is for direct callers
+    const steamId = e.senderId;
+    if (steamId) {
+      await this.store.setPlayerIds(steamId, { playerId: e.playerId ?? undefined, character: e.character || undefined, name: e.name || undefined });
+      // the chat log is UTF-8: repair a "?" name from RCON
+      const p = rt.online.get(steamId);
+      if (p && e.name && p.name !== e.name && p.name.includes('?') && rconNamePattern(p.name).test(e.name)) {
+        p.name = e.name;
+        await this.store.playerSeen(steamId, p.name, rt.cfg.name, Date.now());
+      }
+    }
+    const line = chatLineKey(e.name, e.character, e.message);
+    if (rt.cfg.logSource !== 'none' && rt.chatDedup.isDuplicate('chatlog', line, e.ts)) return;
+    // ASA entries have no time: the file was written at most one flush interval after the message
+    const ts = e.ts ?? Math.min(Date.now(), Math.round(item.fileMtime));
+    const ev: LogEvent = {
+      ts, type: 'chat', text: e.message, name: e.name || undefined, character: e.character || undefined, steamId: steamId ?? undefined,
+      playerId: e.playerId ?? undefined, tribe: e.tribe ?? undefined, tribeId: e.tribeId ?? undefined, channel: e.channel ?? undefined, raw: line,
+    };
+    const data: Record<string, unknown> = { channel: e.channel ?? e.sendMode };
+    for (const k of ['character', 'playerId', 'tribe', 'tribeId'] as const) if (ev[k] !== undefined) data[k] = ev[k];
+    if (e.ts === null) data.tsEstimated = true;
+    await this.recordEvent({ ts, map: rt.cfg.name, type: 'chat', steamId, name: e.name || null, text: e.message, data, source: 'chatlog' });
+    await this.afterLogEvent(rt, ev, steamId);
   }
 
   private async pullGameLog(rt: MapRuntime): Promise<void> {
@@ -441,6 +503,8 @@ export class RconService extends EventEmitter {
     if (typeof rt === 'string') rt = this.map(rt);
     const ev = parseLogLine(line, Date.now());
     if (!ev) return;
+    // the chat log may have delivered this line already (and better: with SteamID and channel)
+    if (ev.type === 'chat' && rt.cfg.chatLogSource === 'file' && rt.chatDedup.isDuplicate('log', chatLineKey(ev.name ?? '', ev.character ?? '', ev.text), ev.ts)) return;
     if (ev.type === 'join' || ev.type === 'leave') {
       rt.logNames.set(ev.name!, Date.now());
       if (rt.logNames.size > 200) rt.logNames.delete(rt.logNames.keys().next().value!);
@@ -469,7 +533,8 @@ export class RconService extends EventEmitter {
   private async afterLogEvent(rt: MapRuntime, ev: LogEvent, steamId: string | null): Promise<void> {
     const map = rt.cfg.name;
     if (ev.type === 'chat') {
-      this.route('chat', `[${map}] **${escapeDiscord(ev.name ?? '?')}**${ev.character ? ` (${escapeDiscord(ev.character)})` : ''}: ${escapeDiscord(ev.text)}`);
+      // tribe and alliance commands stay inside the service (triggers, hooks), Discord gets public chat only
+      if (!ev.channel || ev.channel === 'global' || ev.channel === 'local') this.route('chat', `[${map}] **${escapeDiscord(ev.name ?? '?')}**${ev.character ? ` (${escapeDiscord(ev.character)})` : ''}: ${escapeDiscord(ev.text)}`);
       await this.fireTriggers('chat', { map, text: ev.text, player: steamId ? { steamId, name: ev.name ?? steamId } : undefined }, ev);
     } else if (ev.type === 'admin') {
       this.route('admin', `[${map}] Admin **${escapeDiscord(ev.name ?? '?')}** (${ev.steamId}): \`${(ev.detail ?? '').replace(/`/g, "'")}\``);
