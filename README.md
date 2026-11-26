@@ -308,12 +308,15 @@ ark-export cluster copy-item <datei> --from DATEI --index N (--out DATEI | --in-
 ### Tiere umfärben
 
 ```
-ark-export cluster recolor <datei> (--dino A:B | --index N) --colors R=ID,... (--out DATEI | --in-place --backup ORDNER) [--names game|keep] [--any-color]
+ark-export cluster recolor <datei> (--dino A:B | --index N | --item N) --colors R=ID,... (--out DATEI | --in-place --backup ORDNER) [--names game|keep] [--any-color]
 ```
 
-Setzt die Farben eines hochgeladenen Tiers. Der Spieler lädt das Tier am Obelisken hoch, `recolor` ändert die Farben in seiner Cluster-Datei, und beim Herunterladen baut das Spiel das Tier aus `DinoData` mit den neuen Farben. Bot und Client braucht es dafür nicht.
+Setzt die Farben eines hochgeladenen Tiers oder des Tiers in einer hochgeladenen Seele von Dino Storage v2. Der Spieler lädt das Tier oder die Seele am Obelisken hoch, `recolor` ändert die Farben in seiner Cluster-Datei, und beim Herunterladen baut das Spiel das Tier mit den neuen Farben. Bot und Client braucht es dafür nicht.
 
-- **Auswahl:** `--dino DinoID1:DinoID2` oder `--index N`, die Position in `ArkTamedDinosData`. Beides zeigen `cluster dinos` und `cluster show`, dort jetzt mit den sechs Farben.
+- **Auswahl:**
+  - `--dino DinoID1:DinoID2` sucht unter den hochgeladenen Tieren und in den Seelen. Die ID muss genau einmal vorkommen.
+  - `--index N` ist die Position in `ArkTamedDinosData`, `--item N` die Position einer Seele in `ArkItems`.
+  - Alles zeigen `cluster dinos` und `cluster show`, dort mit den sechs Farben.
 - **Farben:** `--colors 0=14,4=27` setzt Region 0 auf 14 (Black) und Region 4 auf 27 (Dino Dark Green). Nicht genannte Regionen bleiben, wie sie sind.
 - **Gültige IDs** stehen in `src/colors.ts`: 1–100 sind Tierfarben, 201–226 Färbemittel, 0 heißt „Region unbenutzt“. Andere Werte nimmt `recolor` nur mit `--any-color` an.
 - **Was sich ändert:**
@@ -327,7 +330,34 @@ Setzt die Farben eines hochgeladenen Tiers. Der Spieler lädt das Tier am Obelis
   - Danach muss das Tier mit derselben DinoID und genau den neuen Farben zurückgelesen werden.
   - `--in-place` sichert zuerst. Hat der Spielserver die Datei inzwischen geschrieben, ersetzt der Befehl sie nicht.
 - **Erprobt** an Kopien echter Dateien: alle 55 hochgeladenen Tiere aus 45 Cluster-Dateien. Dabei wurden 33-mal eine leere Region eingefügt, 55-mal eine Region geleert und 132 Namen umgeschrieben. Sonst ändert sich nichts, auch nicht an den anderen Uploads derselben Datei. 29 der 55 Tiere hatten `ColorSetNames`.
-- **Noch nicht:** Tiere in hochgeladenen Kryokapseln und Seelen. Deren Archiv ist gleich aufgebaut, steckt aber in den Item-Daten.
+- **Junge:** Im Spieltest am 26.11.2026 trugen die Jungen eines umgefärbten Vaters in einzelnen Regionen seine neuen Farben. Das Spiel legt die Farben des Jungen schon bei der Paarung fest.
+
+#### Seelen von Dino Storage v2
+
+Wer ein Tier über eine Seele umfärbt, behält seine Paarungssperre. Ein nacktes Tier bekommt beim Herunterladen eine neue Sperre gewürfelt, eine Seele bringt ihre Restzeit mit. Die Seele speichert die Farben viermal. Für das Tier, das herauskommt, zählt nur das Archiv. Den Rest zeigt die Seele an, und `recolor` schreibt ihn mit, damit Anzeige und Tier übereinstimmen.
+
+| Stelle | Inhalt | Was `recolor` tut |
+|---|---|---|
+| `ByteArrays[0]` | Archiv des Tiers | wie beim hochgeladenen Tier |
+| `ByteArrays[6]` | sechs Bytes, eine Farb-ID je Region (das farbige Symbol) | auf die neuen IDs |
+| Texte in `CustomDataStrings` | „14,-,-,-,21,19“, bei Nachzucht zusätzlich „F84,-,-,-,-,M13“ (F/M: von Mutter oder Vater geerbt) | jeder Text, der genau die alten Farben nennt, bekommt die neuen. F/M bleibt bei Regionen, die eine Farbe behalten. |
+| Tooltip `CustomItemDescription` | `Colors:</> <RichColor Color="r,g,b,1">[0:14]</> …` | Einträge der geänderten Regionen, Farbwert aus `COLOR_LINEAR` |
+
+- `ByteArrays[1]` sind ebenfalls sechs Bytes, aber etwas anderes (meist 0). Es bleibt.
+- Ältere Seelen schreiben „0“ statt „-“ und führen im Tooltip alle Regionen, leere als `[1:0]` oder `[1:N]`. `recolor` behält die jeweilige Schreibweise.
+- Kennt der Tooltip die neue Farbe schon aus einer anderen Region, übernimmt `recolor` deren Farbwert. Sonst nimmt es den aus `src/colors.ts`. Die Werte stammen aus 34.745 Seelen eines Clusters mit 15 Karten und stimmen auf allen Karten überein, bis auf eine, deren Mods die Farbtabelle ändern.
+- Restsperre, DinoIDs, Werte und alle anderen Daten der Seele bleiben unverändert.
+- **Kryokapseln** nimmt `recolor` nicht an. Nach einem Download würfelt ihr Freilassen die Paarungssperre ohnehin neu.
+- **Abgelehnt** werden außerdem Seelen mit anderem Aufbau (Archiv nicht in `ByteArrays[0]` oder Farb-Bytes nicht in `ByteArrays[6]`).
+- **Spieltest am 26.11.2026:**
+  - Ein Weibchen mit 48,4 h Restsperre ging in eine Seele, die Seele hoch zum Obelisken.
+  - `recolor --dino` färbte sie in der Cluster-Datei von 23,-,-,-,21,8 auf 1,-,-,-,2,6.
+  - Nach dem Download trug die Seele die neuen Farben an allen vier Stellen, die Restzeit war unverändert.
+  - Das freigelassene Tier hatte die neuen Farben und 48,2 h Restsperre, nicht neu gewürfelt.
+  - Ob das Spiel die neuen Farben auch im Tooltip und am Symbol anzeigt, wurde nicht geprüft.
+- **Erprobt** an Kopien echter Daten:
+  - Alle 34.745 Seelen aus den Spielständen von 15 Karten: Die Farbtexte wurden überall erkannt, die Tooltips bei allen 34.693, die Farben führen.
+  - Alle 4 Seelen in Kopien von 1.306 Cluster-Dateien, eine davon aus einem Spieltest: Sie ließen sich umfärben und zurücklesen. Bei der Seele aus dem Spieltest änderten sich nur Archiv, Farb-Bytes, Farbtexte und Tooltip, die übrigen Einträge der Datei blieben gleich.
 
 ## Spielstände ändern
 
@@ -605,7 +635,7 @@ Aufbau:
 - Cluster-Dateien, im Spiel noch zu klären (Items sind seit dem Test am 26.11.2026 geklärt, siehe [Cluster-Dateien](#cluster-dateien)):
   - Warum bleibt die Startnotiz trotz `OwnerPlayerDataID` des Spielers am Obelisken liegen, statt ins Inventar zu wandern?
   - Was passiert bei `--owner player`, wenn das Inventar voll oder zu schwer ist?
-  - Erben die Jungen eines mit `recolor` umgefärbten Tiers die neuen Farben? Liest das Spiel `ColorSetNames`, oder genügen die IDs? (Die Farben selbst kamen im Test am 20.11.2026 an und blieben beim erneuten Hochladen erhalten.)
+  - Liest das Spiel `ColorSetNames`, oder genügen die IDs? (Die Farben kamen im Test am 20.11.2026 an, blieben beim erneuten Hochladen erhalten und gingen am 26.11.2026 auf die Jungen über.)
 
 - Spielstände ändern, im Spiel zu klären:
   - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?

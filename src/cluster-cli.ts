@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { addItem, clusterEntries, DEFAULT_LIFETIME, type NewItem, readCluster, readClusterTree, splitQuantity, writeClusterTree } from './cluster.ts';
 import {
-  addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource, describeColors, recolorDino,
+  addDino, copyItem, creaturesInCluster, creaturesInSave, type CreatureSource, describeColors, findCreature, recolorDino, recolorSoul,
 } from './cluster-dinos.ts';
 import { readContainerTree, type TreeNotes, writeContainerTree } from './tree.ts';
 
@@ -20,8 +20,9 @@ export const CLUSTER_USAGE = `Cluster files (clusters/<ClusterId>/<SteamID>):
                                                      add a creature to the uploads (new DinoIDs, upload time now)
   ark-export cluster copy-item <file> --from FILE --index N (--out FILE | --in-place --backup DIR) [options]
                                                      copy an uploaded item (e.g. a filled soul) with new ItemID and owner
-  ark-export cluster recolor <file> (--dino A:B | --index N) --colors R=ID,... (--out FILE | --in-place --backup DIR)
-                                                     set the colour regions of an uploaded creature
+  ark-export cluster recolor <file> (--dino A:B | --index N | --item N) --colors R=ID,... (--out FILE | --in-place --backup DIR)
+                                                     set the colour regions of an uploaded creature or of the
+                                                     creature in an uploaded Dino Storage v2 soul
 
 add-item options:
   --blueprint BP        item class: Blueprint'/Game/.../X.X', /Game/.../X.X_C or /Game/.../X
@@ -438,12 +439,14 @@ function recolorCommand(args: string[]): number {
     args,
     allowPositionals: true,
     options: {
-      dino: { type: 'string' }, index: { type: 'string' }, colors: { type: 'string' }, names: { type: 'string', default: 'game' },
-      'any-color': { type: 'boolean', default: false }, ...OUTPUT_OPTIONS,
+      dino: { type: 'string' }, index: { type: 'string' }, item: { type: 'string' }, colors: { type: 'string' },
+      names: { type: 'string', default: 'game' }, 'any-color': { type: 'boolean', default: false }, ...OUTPUT_OPTIONS,
     },
   });
   if (positionals.length !== 1) throw new Error('recolor needs exactly one cluster file');
-  if ((values.dino === undefined) === (values.index === undefined)) throw new Error('give either --dino A:B or --index N');
+  if ([values.dino, values.index, values.item].filter((v) => v !== undefined).length !== 1) {
+    throw new Error('give exactly one of --dino A:B, --index N or --item N');
+  }
   if (!values.colors) throw new Error('--colors is required');
   if (values.names !== 'game' && values.names !== 'keep') throw new Error('--names must be game or keep');
   checkOutput(values);
@@ -453,25 +456,59 @@ function recolorCommand(args: string[]): number {
   const before = readTarget(src, values['in-place']);
   const tree = readClusterTree(before);
   if (!tree) throw new Error(`${src} is empty: no uploaded creatures`);
-  const dinosBefore = clusterEntries(tree, 'ArkTamedDinosData').length;
-  const { tree: changed, recolored } = recolorDino(
-    tree,
-    values.dino !== undefined ? { dinoId: pair(values.dino, '--dino') } : { index: number(values.index, 'index') },
-    { colors: parseColors(values.colors), names: values.names, anyColor: values['any-color'] },
-  );
+  const r = { colors: parseColors(values.colors), names: values.names as 'game' | 'keep', anyColor: values['any-color'] };
+  const dinoId = values.dino !== undefined ? pair(values.dino, '--dino') : undefined;
+  let soul = values.item !== undefined;
+  if (dinoId) {
+    const { uploads, souls } = findCreature(tree, dinoId);
+    if (uploads.length + souls.length !== 1) {
+      throw new Error(`DinoID ${dinoId.join(':')}: ${uploads.length} uploaded creatures and ${souls.length} souls with this id, expected exactly one`);
+    }
+    soul = souls.length === 1;
+  }
+  const sourcesBefore = creaturesInCluster(tree).map((x) => x.where);
+
+  let report: Record<string, unknown>;
+  let where: string;
+  let changed;
+  let after0: number[];
+  let id: [number, number];
+  if (soul) {
+    const res = recolorSoul(tree, dinoId ? { dinoId } : { item: number(values.item, 'item') }, r);
+    changed = res.tree;
+    const x = res.recolored;
+    where = `ArkItems[${x.item}] `;
+    after0 = x.after;
+    id = x.dinoId;
+    report = {
+      soul: { item: x.item, dinoId: x.dinoId, cls: x.cls },
+      colors: { before: describeColors(x.before), after: describeColors(x.after) },
+      namesRewritten: x.names, colorBytes: true, textsRewritten: x.texts, tooltipRewritten: x.tooltip,
+    };
+  } else {
+    const res = recolorDino(tree, dinoId ? { dinoId } : { index: number(values.index, 'index') }, r);
+    changed = res.tree;
+    const x = res.recolored;
+    where = `ArkTamedDinosData[${x.index}]`;
+    after0 = x.after;
+    id = x.dinoId;
+    report = {
+      dino: { index: x.index, dinoId: x.dinoId, cls: x.cls },
+      colors: { before: describeColors(x.before), after: describeColors(x.after) },
+      namesRewritten: x.names,
+    };
+  }
   const after = writeClusterTree(changed);
-  const check = creaturesInCluster(readClusterTree(after)).filter((s) => s.kind === 'upload');
-  const mine = check.find((s) => s.where === `ArkTamedDinosData[${recolored.index}]`);
-  if (check.length !== dinosBefore || !mine || mine.info.dinoId.join(':') !== recolored.dinoId.join(':') || mine.info.colors.join(',') !== recolored.after.join(',')) {
+  const check = creaturesInCluster(readClusterTree(after));
+  const mine = check.filter((x) => (soul ? x.where.startsWith(where) : x.where === where));
+  if (check.map((x) => x.where).join('|') !== sourcesBefore.join('|') || mine.length !== 1
+    || mine[0].info.dinoId.join(':') !== id.join(':') || mine[0].info.colors.join(',') !== after0.join(',')) {
     throw new Error('the written file does not read back as expected');
   }
   if (!writeClusterTree(readClusterTree(after)).equals(after)) throw new Error('the written file does not round-trip');
   const { target, backup } = commit(src, before, after, values);
   print({
-    file: target, backup,
-    dino: { index: recolored.index, dinoId: recolored.dinoId, cls: recolored.cls },
-    colors: { before: describeColors(recolored.before), after: describeColors(recolored.after) },
-    namesRewritten: recolored.names,
+    file: target, backup, ...report,
     before: { bytes: before.length, sha256: sha256(before) },
     after: { bytes: after.length, sha256: sha256(after) },
   });
