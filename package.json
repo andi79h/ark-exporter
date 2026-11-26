@@ -2,7 +2,7 @@
   "name": "ark-exporter",
   "version": "0.1.0",
   "private": true,
-  "description": "Reads ARK: Survival Evolved savegames completely and writes searchable SQLite snapshots plus a change history.",
+  "description": "Server tools for ARK: Survival Evolved: savegame exporter (SQLite/MySQL snapshots and history) and RCON service ark-rcon (console, players, chat and game log, bans, schedules, triggers, web UI).",
   "license": "MIT",
   "author": "Andreas Herbert (andi79h)",
   "repository": {
@@ -11,7 +11,8 @@
   },
   "type": "module",
   "bin": {
-    "ark-export": "bin/ark-export"
+    "ark-export": "bin/ark-export",
+    "ark-rcon": "bin/ark-rcon"
   },
   "engines": {
     "node": ">=22.18"

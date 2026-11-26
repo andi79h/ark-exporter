@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ark-rcon</title>
+<style>
+:root {
+  --bg: #0d1017; --panel: #151a24; --panel2: #1c2230; --line: #2a3242; --text: #e6e4dc; --muted: #a7adba;
+  --gold: #c9a24a; --gold-hi: #ecd07f; --gold-lo: #7a5f22; --ok: #5fb878; --warn: #e0a33b; --bad: #e0605a; --link: #f0c96a;
+  --serif: "Palatino Linotype", "Book Antiqua", Palatino, "URW Palladio L", Georgia, serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--link); text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: linear-gradient(#1c2436, #121722); border-bottom: 1px solid var(--gold-lo); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font: 700 20px var(--serif); color: var(--gold-hi); margin: 0; text-shadow: 0 1px 2px #000; letter-spacing: .02em; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav a { padding: 6px 10px; border-radius: 4px; color: var(--muted); font-family: var(--serif); font-weight: 700; }
+nav a.active { color: var(--bg); background: linear-gradient(var(--gold-hi), var(--gold)); text-decoration: none; }
+#who { margin-left: auto; color: var(--muted); font-size: 13px; }
+main { padding: 16px; max-width: 1700px; margin: 0 auto; }
+h2 { font: 700 18px var(--serif); color: var(--gold-hi); margin: 0 0 12px; }
+h3 { font: 700 15px var(--serif); color: var(--gold); margin: 14px 0 6px; }
+.eyebrow { font: 700 11px var(--serif); color: var(--gold); letter-spacing: .22em; text-transform: uppercase; }
+button, .btn { font: 700 13px var(--serif); color: #1b1408; background: linear-gradient(var(--gold-hi), var(--gold)); border: 1px solid var(--gold-lo); border-radius: 4px; padding: 5px 12px; cursor: pointer; }
+button.ghost { background: var(--panel2); color: var(--text); border-color: var(--line); }
+button.danger { background: linear-gradient(#f08a84, var(--bad)); }
+button:disabled { opacity: .5; cursor: default; }
+input, select, textarea { font: inherit; color: var(--text); background: #0a0d13; border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+textarea { font-family: var(--mono); font-size: 12px; width: 100%; min-height: 110px; }
+input:focus, select:focus, textarea:focus { outline: 1px solid var(--gold); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.grow { flex: 1; min-width: 160px; }
+.bar { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 14px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; min-height: 330px; overflow: hidden; }
+.card .head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--panel2); border-bottom: 1px solid var(--line); font-size: 13px; flex-wrap: wrap; }
+.card .head b { font-family: var(--serif); color: var(--gold-hi); }
+.card .body { display: flex; flex: 1; min-height: 0; }
+.card .players { width: 165px; border-right: 1px solid var(--line); overflow: auto; padding: 6px; font-size: 13px; }
+.card .feed { flex: 1; overflow: auto; padding: 4px 8px; font-size: 12.5px; max-height: 300px; }
+.card .cmd { display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--line); }
+.card .cmd input { flex: 1; font-family: var(--mono); font-size: 12px; min-width: 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--muted); }
+.dot.online { background: var(--ok); } .dot.offline, .dot.auth-failed { background: var(--bad); } .dot.starting { background: var(--warn); }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.badge.live { border-color: var(--gold-lo); color: var(--gold); } .badge.test { color: #8fc1ff; border-color: #2d4a6b; }
+.badge.bad { color: var(--bad); border-color: #6b2d2d; } .badge.ok { color: var(--ok); border-color: #2d6b3d; }
+.ev { padding: 2px 0; border-bottom: 1px solid #1d2330; word-break: break-word; white-space: pre-wrap; }
+.ev time { color: var(--muted); font-family: var(--mono); font-size: 11px; margin-right: 6px; }
+.ev.chat .t { color: #fff; } .ev.join .t, .ev.leave .t { color: #8fc1ff; } .ev.admin .t { color: var(--warn); }
+.ev.server-chat .t { color: var(--gold-hi); } .ev.ban-kick .t, .ev.map-offline .t { color: var(--bad); } .ev.map-online .t { color: var(--ok); }
+.ev.tribe .t, .ev.tame .t, .ev.death .t, .ev.mod .t, .ev.other .t { color: var(--muted); }
+.ev .n { color: var(--link); font-weight: 600; }
+.console-out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font: 700 12px var(--serif); color: var(--gold); padding: 6px; border-bottom: 1px solid var(--gold-lo); position: sticky; top: 0; background: var(--panel); }
+td { padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:hover td { background: #171d29; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--muted); }
+.hint { color: var(--muted); font-size: 12px; margin: 4px 0; }
+.err { color: var(--bad); }
+.okc { color: var(--ok); }
+.tablewrap { overflow-x: auto; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--gold-lo); border-radius: 8px; width: min(1000px, 96vw); max-height: 90vh; padding: 16px; }
+dialog::backdrop { background: rgba(0, 0, 0, .6); }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.scroll { max-height: 320px; overflow: auto; }
+#login { max-width: 360px; margin: 12vh auto; background: var(--panel); border: 1px solid var(--gold-lo); border-radius: 8px; padding: 24px; box-shadow: 0 0 0 3px #2a2113, 0 0 0 4px var(--gold-lo); }
+#login input { width: 100%; margin-bottom: 10px; }
+#toast { position: fixed; bottom: 16px; right: 16px; background: var(--panel2); border: 1px solid var(--gold-lo); border-radius: 6px; padding: 10px 14px; display: none; max-width: 480px; z-index: 20; white-space: pre-wrap; }
+@media (max-width: 760px) {
+  .grid { grid-template-columns: 1fr; } .cols { grid-template-columns: 1fr; }
+  .card .players { width: 110px; } main { padding: 10px 16px; } #who { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<dialog id="dlg"></dialog>
+<script>
+'use strict';
+const S = { me: null, maps: [], meta: null, view: 'dashboard', feeds: {}, es: null };
+const EV_LABEL = { 'server-chat': 'Server', join: 'Join', leave: 'Leave', admin: 'Admin', tribe: 'Stamm', tame: 'Zähmung', death: 'Tod', mod: 'Mod', 'map-online': 'online', 'map-offline': 'offline', 'ban-kick': 'Bann-Kick' };
+
+// --- helpers --------------------------------------------------------------------------------------------------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (k === 'value') el.value = v;
+    else if (k === 'checked' || k === 'selected') el[k] = Boolean(v);
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat(3)) if (kid !== null && kid !== undefined && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+const $ = (sel) => document.querySelector(sel);
+const fill = (el, ...kids) => el.replaceChildren(...kids.flat(3).filter((k) => k !== null && k !== undefined && k !== false).map((k) => (k instanceof Node ? k : String(k))));
+const can = (p) => S.me && S.me.permissions.includes(p);
+const fmt = (ts) => ts ? new Date(ts).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–';
+const fmtT = (ts) => new Date(ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const dur = (s) => { s = Math.round(s || 0); const hh = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return hh ? `${hh} h ${m} min` : `${m} min`; };
+function toast(text, bad) { const t = $('#toast'); t.textContent = text; t.style.borderColor = bad ? 'var(--bad)' : 'var(--gold-lo)'; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, bad ? 9000 : 4000); }
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { 'content-type': 'application/json', 'x-ark-rcon': '1' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== '/api/login' && path !== '/api/me') { S.me = null; render(); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+const safe = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+const resultText = (results) => results.map((r) => `${r.map}: ${r.ok ? (r.response || '(keine Antwort)') : r.error}`).join('\n');
+// channel from the JSON chat log; global chat (and chat from the ServerGame log, which has no channel) gets no label
+const CHANNEL_LABEL = { tribe: 'Tribe', alliance: 'Allianz', local: 'Lokal' };
+function evLine(e, withMap) {
+  const name = e.name ? h('a', { class: 'n', onclick: () => e.steam_id && openPlayer(e.steam_id), title: e.steam_id || '' }, e.name) : null;
+  let character = '';
+  let channel = '';
+  try { const d = e.data ? JSON.parse(e.data) : {}; character = d.character || ''; channel = CHANNEL_LABEL[d.channel] || ''; } catch { /* ignore */ }
+  return h('div', { class: `ev ${e.type}` }, h('time', { title: new Date(e.ts).toLocaleString('de-DE') }, fmtT(e.ts)), withMap && e.map ? [h('span', { class: 'badge' }, e.map), ' '] : null,
+    e.type === 'chat' ? [channel ? h('span', { class: 'muted' }, `[${channel}] `) : null, name, character ? h('span', { class: 'muted' }, ` (${character})`) : null, ': ', h('span', { class: 't' }, e.text)]
+      : h('span', { class: 't' }, `${EV_LABEL[e.type] ? `[${EV_LABEL[e.type]}] ` : ''}${e.text || ''}`));
+}
+
+// --- login and frame --------------------------------------------------------------------------------------------
+function loginView() {
+  const name = h('input', { placeholder: 'Name', autocomplete: 'username' });
+  const pw = h('input', { placeholder: 'Passwort', type: 'password', autocomplete: 'current-password' });
+  const err = h('div', { class: 'err' });
+  const go = async (ev) => {
+    ev.preventDefault();
+    try { await api('POST', '/api/login', { name: name.value, password: pw.value }); await boot(); } catch (e) { err.textContent = e.message; }
+  };
+  return h('form', { id: 'login', onsubmit: go }, h('div', { class: 'eyebrow' }, 'RCON-Verwaltung'), h('h2', {}, 'ark-rcon'), name, pw, h('button', { type: 'submit' }, 'Anmelden'), err);
+}
+
+const VIEWS = [
+  ['dashboard', 'Dashboard', 'view'], ['players', 'Spieler', 'view'], ['activity', 'Aktivität', 'view'], ['bans', 'Banns', 'view'],
+  ['commands', 'Befehle', 'view'], ['schedules', 'Zeitpläne', 'view'], ['triggers', 'Trigger', 'view'], ['audit', 'Audit-Log', 'audit'], ['users', 'Benutzer', 'users'],
+];
+
+function render() {
+  const app = $('#app');
+  app.replaceChildren();
+  if (!S.me) { app.append(loginView()); return; }
+  const nav = h('nav', {}, VIEWS.filter(([, , p]) => can(p)).map(([id, label]) => h('a', { class: S.view === id ? 'active' : '', onclick: () => { S.view = id; location.hash = id; render(); } }, label)));
+  app.append(h('header', {}, h('h1', {}, 'ark-rcon'), nav, h('div', { id: 'who' }, `${S.me.name} · ${S.me.role} · `,
+    h('a', { onclick: changePassword }, 'Passwort'), ' · ', h('a', { onclick: safe(async () => { await api('POST', '/api/logout'); S.me = null; if (S.es) S.es.close(); render(); }) }, 'Abmelden'))));
+  const main = h('main');
+  app.append(main);
+  ({ dashboard, players, activity, bans, commands, schedules, triggers, audit, users })[S.view](main);
+}
+
+// --- dashboard ------------------------------------------------------------------------------------------------
+function dashboard(main) {
+  const text = h('input', { class: 'grow', placeholder: 'Nachricht an alle Karten (ServerChat; Umlaute werden umgeschrieben)', maxlength: 400 });
+  const cmd = h('input', { class: 'grow mono', placeholder: 'Befehl an alle Karten, z. B. SaveWorld', list: 'cmdlist' });
+  const out = h('div', { class: 'console-out' });
+  const list = h('datalist', { id: 'cmdlist' }, (S.meta?.verified || []).concat(S.meta?.risky || []).map((c) => h('option', { value: c })));
+  const sendAll = safe(async () => { if (!text.value.trim()) return; out.textContent = resultText(await api('POST', '/api/broadcast', { maps: 'all', text: text.value })); text.value = ''; });
+  const execAll = safe(async () => { if (!cmd.value.trim()) return; if (!confirm(`„${cmd.value}“ an alle Karten senden?`)) return; out.textContent = resultText(await api('POST', '/api/exec', { maps: 'all', command: cmd.value })); });
+  text.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAll(); });
+  const online = S.maps.reduce((n, m) => n + m.players.length, 0);
+  main.append(h('div', { class: 'bar' },
+    h('div', { class: 'row' }, h('span', { class: 'eyebrow' }, `${S.maps.filter((m) => m.status === 'online').length} von ${S.maps.length} Karten online · ${online} Spieler`)),
+    can('chat') ? h('div', { class: 'row' }, h('span', { class: 'eyebrow' }, 'An alle'), text, h('button', { onclick: sendAll }, 'Senden')) : null,
+    can('console') ? h('div', { class: 'row' }, h('span', { class: 'eyebrow' }, 'Konsole'), cmd, list, h('button', { onclick: execAll }, 'An alle Karten')) : null,
+    out));
+  const grid = h('div', { class: 'grid' });
+  main.append(grid);
+  for (const m of S.maps) grid.append(mapCard(m));
+}
+
+function cardHead(m) {
+  return h('div', { class: 'head' }, h('span', { class: `dot ${m.status}`, title: m.error || m.status }), h('b', { title: m.title }, m.name),
+    h('span', { class: 'muted' }, `${m.players.length} online`), h('span', { class: `badge ${m.role}` }, m.role),
+    m.externalBufferReader ? h('span', { class: 'badge', title: 'Ein anderes Programm (BattleMetrics) liest GetChat/GetGameLog. Der Dienst fragt sie hier nie ab.' }, 'Puffer extern') : null,
+    h('span', { class: 'badge', title: 'Quelle für Chat und Spiellog' }, `Log: ${m.logSource}`),
+    m.chatLogSource === 'file' ? h('span', { class: 'badge', title: 'JSON-Chat-Log: alle Kanäle, aus Tribe- und Allianz-Chat nur Befehle mit !' }, 'Chat-Log') : null, m.status !== 'online' && m.error ? h('span', { class: 'err', style: 'font-size:12px' }, m.error) : null);
+}
+function cardPlayers(m) {
+  return h('div', { class: 'players' }, m.players.length ? m.players.map((p) => h('div', {}, h('a', { onclick: () => openPlayer(p.steamId), title: `online seit ${fmt(p.since)}` }, p.name))) : h('div', { class: 'muted' }, 'Keine Spieler'));
+}
+function mapCard(m) {
+  const feed = h('div', { class: 'feed' });
+  for (const e of (S.feeds[m.name] || []).slice(-80)) feed.append(evLine(e));
+  setTimeout(() => { feed.scrollTop = feed.scrollHeight; });
+  const input = h('input', { placeholder: can('console') ? 'Befehl, oder !Text für ServerChat' : '!Text für ServerChat', list: 'cmdlist' });
+  const send = safe(async () => {
+    const v = input.value.trim(); if (!v) return;
+    input.value = '';
+    const r = v.startsWith('!') ? await api('POST', '/api/broadcast', { maps: [m.name], text: v.slice(1) }) : await api('POST', '/api/exec', { maps: [m.name], command: v });
+    feed.append(h('div', { class: 'ev' }, h('time', {}, fmtT(Date.now())), h('span', { class: r[0]?.ok ? 'okc' : 'err' }, `> ${v}\n${resultText(r)}`)));
+    feed.scrollTop = feed.scrollHeight;
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  return h('div', { class: 'card', 'data-map': m.name }, cardHead(m), h('div', { class: 'body' }, cardPlayers(m), feed),
+    (can('chat') || can('console')) ? h('div', { class: 'cmd' }, input, h('button', { onclick: send }, 'Senden')) : null);
+}
+
+// --- players ---------------------------------------------------------------------------------------------------
+function players(main) {
+  const q = h('input', { class: 'grow', placeholder: 'Name, Charaktername, SteamID oder ARK-ID', value: S.playerQuery || '' });
+  const tbody = h('tbody');
+  const load = safe(async () => {
+    S.playerQuery = q.value;
+    const rows = await api('GET', `/api/players?q=${encodeURIComponent(q.value)}&limit=200`);
+    tbody.replaceChildren(...rows.map((p) => h('tr', {},
+      h('td', {}, h('a', { onclick: () => openPlayer(p.steam_id) }, p.name || '?'), p.character_name ? h('div', { class: 'muted' }, p.character_name) : null),
+      h('td', { class: 'mono' }, p.steam_id), h('td', { class: 'mono' }, p.player_id || ''),
+      h('td', {}, p.online.length ? h('span', { class: 'badge ok' }, `online: ${p.online.join(', ')}`) : fmt(p.last_seen)),
+      h('td', {}, p.last_map || ''), h('td', {}, dur(p.play_seconds)), h('td', {}, p.sessions), h('td', {}, fmt(p.first_seen)),
+      h('td', {}, p.banned ? h('span', { class: 'badge bad' }, 'gebannt') : ''))));
+  });
+  q.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(); });
+  main.append(h('h2', {}, 'Spieler'), h('div', { class: 'row' }, q, h('button', { onclick: load }, 'Suchen')),
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'SteamID', 'ARK-ID', 'Zuletzt', 'Karte', 'Spielzeit', 'Sitzungen', 'Erstmals', ''].map((t) => h('th', {}, t)))), tbody)));
+  load();
+}
+
+const openPlayer = safe(async (steamId) => {
+  const d = await api('GET', `/api/players/${steamId}`);
+  const p = d.player;
+  const dlg = $('#dlg');
+  const msg = h('input', { class: 'grow', placeholder: 'Private Nachricht (ServerChatTo)' });
+  const note = h('input', { class: 'grow', placeholder: 'Notiz' });
+  const flag = h('select', {}, ['', 'beobachten', 'verwarnt', 'vertrauenswürdig', 'Spender'].map((f) => h('option', { value: f }, f || '(ohne Markierung)')));
+  const reason = h('input', { class: 'grow', placeholder: 'Grund für Bann oder Kick' });
+  const length = h('select', {}, [['60', '1 Stunde'], ['1440', '1 Tag'], ['10080', '7 Tage'], ['43200', '30 Tage'], ['', 'dauerhaft']].map(([v, l]) => h('option', { value: v }, l)));
+  const out = h('div', { class: 'console-out' });
+  fill(dlg, 
+    h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, p.name || p.steam_id), d.online.length ? h('span', { class: 'badge ok' }, `online: ${d.online.join(', ')}`) : null,
+      d.banned ? h('span', { class: 'badge bad' }, 'gebannt') : null, h('span', { class: 'grow' }), h('button', { class: 'ghost', onclick: () => dlg.close() }, 'Schließen')),
+    h('div', { class: 'hint mono' }, `SteamID ${p.steam_id} · ARK-ID ${p.player_id || '–'} · Charakter ${p.character_name || '–'} · erstmals ${fmt(p.first_seen)} · zuletzt ${fmt(p.last_seen)} (${p.last_map || '–'}) · ${p.sessions} Sitzungen · ${dur(p.play_seconds)}`),
+    d.names.length > 1 ? h('div', { class: 'hint' }, 'Namen: ', d.names.map((n) => n.name).join(', ')) : null,
+    can('chat') && d.online.length ? h('div', { class: 'row' }, msg, h('button', { onclick: safe(async () => { out.textContent = resultText(await api('POST', `/api/players/${p.steam_id}/message`, { text: msg.value })); msg.value = ''; }) }, 'Senden')) : null,
+    (can('kick') || can('ban')) ? h('div', { class: 'row' }, reason,
+      can('kick') && d.online.length ? h('button', { class: 'ghost', onclick: safe(async () => { out.textContent = resultText(await api('POST', `/api/players/${p.steam_id}/kick`, { reason: reason.value })); }) }, 'Kicken') : null,
+      can('ban') ? [length, h('button', { class: 'danger', onclick: safe(async () => {
+        if (!confirm(`${p.name || p.steam_id} auf allen Karten bannen?`)) return;
+        await api('POST', '/api/bans', { steamId: p.steam_id, reason: reason.value, minutes: length.value || null, name: p.name });
+        toast('Gebannt'); openPlayer(p.steam_id);
+      }) }, 'Bannen')] : null) : null,
+    out,
+    h('div', { class: 'cols' },
+      h('div', {}, h('h3', {}, 'Chat und Ereignisse'), h('div', { class: 'scroll' }, d.events.length ? d.events.map((e) => evLine(e, true)) : h('div', { class: 'muted' }, 'keine'))),
+      h('div', {},
+        h('h3', {}, 'Sitzungen'), h('div', { class: 'scroll', style: 'max-height:160px' }, h('table', {}, d.sessions.map((s) => h('tr', {}, h('td', {}, s.map), h('td', {}, fmt(s.start_ts)), h('td', {}, s.end_ts ? dur((s.end_ts - s.start_ts) / 1000) : 'online'), h('td', { class: 'muted' }, s.end_reason || ''))))),
+        h('h3', {}, 'Banns'), d.bans.length ? h('table', {}, d.bans.map((b) => banRow(b, () => openPlayer(p.steam_id)))) : h('div', { class: 'muted' }, 'keine'),
+        can('notes') ? [h('h3', {}, 'Notizen'), h('div', { class: 'row' }, note, flag, h('button', { onclick: safe(async () => { await api('POST', `/api/players/${p.steam_id}/notes`, { text: note.value, flag: flag.value || null }); openPlayer(p.steam_id); }) }, 'Hinzufügen')),
+          d.notes.map((n) => h('div', { class: 'ev' }, h('time', {}, fmt(n.ts)), n.flag ? h('span', { class: 'badge' }, n.flag) : null, ' ', h('b', {}, n.author), ': ', n.text, ' ',
+            h('a', { title: 'löschen', onclick: safe(async () => { if (!confirm('Notiz löschen?')) return; await api('DELETE', `/api/notes/${n.id}`); openPlayer(p.steam_id); }) }, '×')))] : null)));
+  if (!dlg.open) dlg.showModal();
+});
+
+// --- activity --------------------------------------------------------------------------------------------------
+function activity(main) {
+  const map = h('select', {}, h('option', { value: '' }, 'alle Karten'), S.maps.map((m) => h('option', { value: m.name }, m.name)));
+  const type = h('select', {}, h('option', { value: '' }, 'alle Arten'), [['chat', 'Chat'], ['chat,server-chat', 'Chat + Server'], ['join,leave', 'Join/Leave'], ['admin', 'Admin-Befehle im Spiel'],
+    ['tribe,tame,death', 'Stamm/Zähmung/Tod'], ['map-online,map-offline,ban-kick', 'Dienst'], ['mod,other', 'Mod/Sonstiges']].map(([v, l]) => h('option', { value: v }, l)));
+  const q = h('input', { class: 'grow', placeholder: 'Text oder Name' });
+  const live = h('input', { type: 'checkbox', checked: true });
+  const list = h('div');
+  S.activityFilter = () => ({ map: map.value, types: type.value, q: q.value, live: live.checked });
+  let oldest = 0;
+  const load = safe(async (more) => {
+    const f = S.activityFilter();
+    const rows = await api('GET', `/api/events?limit=300&map=${encodeURIComponent(f.map)}&types=${encodeURIComponent(f.types)}&q=${encodeURIComponent(f.q)}${more && oldest ? `&beforeId=${oldest}` : ''}`);
+    if (!more) list.replaceChildren();
+    for (const e of rows) list.append(evLine(e, true));
+    if (rows.length) oldest = rows[rows.length - 1].id;
+  });
+  S.activityList = list;
+  for (const el of [map, type]) el.addEventListener('change', () => load(false));
+  q.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(false); });
+  main.append(h('h2', {}, 'Aktivität'), h('div', { class: 'row' }, map, type, q, h('label', {}, live, ' live'), h('button', { onclick: () => load(false) }, 'Filtern')),
+    h('div', { class: 'bar' }, list), h('button', { class: 'ghost', onclick: () => load(true) }, 'Ältere laden'));
+  load(false);
+}
+
+// --- bans ------------------------------------------------------------------------------------------------------
+function banRow(b, after) {
+  const active = !b.revoked_ts && (!b.expires_ts || b.expires_ts > Date.now());
+  return h('tr', {}, h('td', {}, h('a', { onclick: () => openPlayer(b.steam_id) }, b.name || b.steam_id), h('div', { class: 'mono muted' }, b.steam_id)),
+    h('td', {}, b.reason), h('td', {}, fmt(b.created_ts), h('div', { class: 'muted' }, b.created_by)),
+    h('td', {}, b.expires_ts ? fmt(b.expires_ts) : 'dauerhaft'),
+    h('td', {}, active ? h('span', { class: 'badge bad' }, 'aktiv') : h('span', { class: 'badge' }, b.revoked_ts ? `aufgehoben ${fmt(b.revoked_ts)} (${b.revoked_by}${b.revoke_reason ? `: ${b.revoke_reason}` : ''})` : 'abgelaufen')),
+    h('td', {}, active && can('unban') ? h('button', { class: 'ghost', onclick: safe(async () => { const r = prompt('Grund für die Aufhebung?'); if (r === null) return; await api('POST', `/api/bans/${b.id}/revoke`, { reason: r }); toast('Bann aufgehoben'); after(); }) }, 'Aufheben') : ''));
+}
+function bans(main) {
+  const all = h('input', { type: 'checkbox' });
+  const tbody = h('tbody');
+  const load = safe(async () => { const rows = await api('GET', `/api/bans${all.checked ? '' : '?active=1'}`); tbody.replaceChildren(...rows.map((b) => banRow(b, load))); });
+  all.addEventListener('change', load);
+  const sid = h('input', { placeholder: 'SteamID (17 Ziffern)', class: 'mono' });
+  const reason = h('input', { class: 'grow', placeholder: 'Grund' });
+  const length = h('select', {}, [['', 'dauerhaft'], ['60', '1 Stunde'], ['1440', '1 Tag'], ['10080', '7 Tage'], ['43200', '30 Tage']].map(([v, l]) => h('option', { value: v }, l)));
+  main.append(h('h2', {}, 'Banns'),
+    h('p', { class: 'hint' }, 'Banns gelten auf allen Karten: Der Dienst schickt BanPlayer an jede erreichbare Karte, kickt gebannte Spieler beim Betreten und hebt Zeitbanns selbst wieder auf. Banns von Admins im Spiel werden übernommen.'),
+    can('ban') ? h('div', { class: 'bar row' }, sid, reason, length, h('button', { class: 'danger', onclick: safe(async () => {
+      if (!confirm(`SteamID ${sid.value} auf allen Karten bannen?`)) return;
+      await api('POST', '/api/bans', { steamId: sid.value.trim(), reason: reason.value, minutes: length.value || null }); sid.value = ''; reason.value = ''; toast('Gebannt'); load();
+    }) }, 'Bannen')) : null,
+    h('div', { class: 'row' }, h('label', {}, all, ' auch aufgehobene und abgelaufene')),
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Spieler', 'Grund', 'Erstellt', 'Bis', 'Status', ''].map((t) => h('th', {}, t)))), tbody)));
+  load();
+}
+
+// --- saved commands --------------------------------------------------------------------------------------------
+function mapSelect(multiple, extra) {
+  return h('select', multiple ? { multiple: true, size: Math.min(8, S.maps.length + 1) } : {}, (extra || []).map(([v, l]) => h('option', { value: v }, l)), S.maps.map((m) => h('option', { value: m.name }, m.name)));
+}
+const selected = (sel) => [...sel.selectedOptions].map((o) => o.value);
+function commands(main) {
+  const list = h('div');
+  const load = safe(async () => {
+    const rows = await api('GET', '/api/commands');
+    list.replaceChildren(...rows.map((c) => {
+      const params = c.params ? JSON.parse(c.params) : [];
+      const inputs = params.map((p) => h('input', { placeholder: `${p.name}${p.type ? ` (${p.type})` : ''}`, 'data-name': p.name }));
+      const targets = c.targets ? JSON.parse(c.targets) : null;
+      const playerMap = targets === 'player' || (Array.isArray(targets) && targets[0] === 'player');
+      const sel = playerMap ? null : mapSelect(false, [['', targets ? `Vorgabe: ${targets.join(', ')}` : 'alle Karten']]);
+      const out = h('div', { class: 'console-out' });
+      return h('div', { class: 'bar' },
+        h('div', { class: 'row' }, h('b', { style: 'font-family:var(--serif);color:var(--gold-hi)' }, c.name), h('span', { class: 'mono muted' }, c.template), h('span', { class: 'badge' }, c.permission),
+          playerMap ? h('span', { class: 'badge' }, 'Karte des Spielers') : null,
+          can('commands.manage') ? h('a', { onclick: () => editCommand(c, load) }, 'bearbeiten') : null),
+        c.description ? h('div', { class: 'hint' }, c.description) : null,
+        can('commands.run') ? h('div', { class: 'row' }, inputs, sel, h('button', { onclick: safe(async () => {
+          const values = Object.fromEntries(inputs.map((i) => [i.dataset.name, i.value]));
+          out.textContent = resultText(await api('POST', `/api/commands/${c.id}/run`, { params: values, maps: sel && sel.value ? [sel.value] : undefined }));
+        }) }, 'Ausführen')) : null, out);
+    }));
+    if (!rows.length) list.append(h('div', { class: 'muted' }, 'Noch keine gespeicherten Befehle.'));
+  });
+  main.append(h('h2', {}, 'Gespeicherte Befehle'),
+    h('p', { class: 'hint' }, 'Vorlagen mit Parametern, z. B. ', h('span', { class: 'mono' }, 'ScriptCommand TCsAR AddArcTotal {{param.steamId}} {{param.points}}'), '. Moderatoren dürfen sie ausführen, ohne die Konsole zu haben. Der Sicherheitscheck gilt trotzdem.'),
+    can('commands.manage') ? h('div', { class: 'row' }, h('button', { onclick: () => editCommand(null, load) }, 'Neuer Befehl')) : null, list);
+  load();
+}
+function editCommand(c, after) {
+  const dlg = $('#dlg');
+  const name = h('input', { class: 'grow', value: c?.name || '', placeholder: 'Name' });
+  const template = h('input', { class: 'grow mono', value: c?.template || '', placeholder: 'Befehl mit {{param.name}}' });
+  const desc = h('input', { class: 'grow', value: c?.description || '', placeholder: 'Beschreibung' });
+  const perm = h('select', {}, ['commands.run', 'console', 'console.risky'].map((p) => h('option', { value: p, selected: c?.permission === p }, p)));
+  const params = h('textarea', {}, c?.params || '[{"name": "steamId", "type": "steamId"}]');
+  const targets = h('input', { class: 'grow mono', value: c?.targets || '', placeholder: 'leer = alle Karten, ["islandPVE"] oder "player" (Karte, auf der der Spieler ist)' });
+  const check = h('div', { class: 'hint' });
+  template.addEventListener('input', safe(async () => { const r = await api('POST', '/api/check', { command: template.value.replace(/\{\{[^}]*\}\}/g, 'x') }); check.textContent = r.ok ? `✓ ${r.level}${r.notes.length ? ` – ${r.notes.join('; ')}` : ''}` : `✗ ${r.reason}`; }));
+  fill(dlg, h('h2', {}, c ? 'Befehl bearbeiten' : 'Neuer Befehl'),
+    h('div', { class: 'row' }, name, perm), h('div', { class: 'row' }, template), check, h('div', { class: 'row' }, desc),
+    h('h3', {}, 'Parameter (JSON; type: text, steamId, number)'), params, h('h3', {}, 'Ziel'), h('div', { class: 'row' }, targets),
+    h('div', { class: 'row' }, h('button', { onclick: safe(async () => {
+      const body = { name: name.value, template: template.value, description: desc.value, permission: perm.value, params: params.value.trim() ? JSON.parse(params.value) : null, targets: targets.value.trim() ? JSON.parse(targets.value) : null };
+      await api(c ? 'PUT' : 'POST', c ? `/api/commands/${c.id}` : '/api/commands', body); dlg.close(); after();
+    }) }, 'Speichern'), c ? h('button', { class: 'danger', onclick: safe(async () => { if (!confirm('Löschen?')) return; await api('DELETE', `/api/commands/${c.id}`); dlg.close(); after(); }) }, 'Löschen') : null,
+    h('button', { class: 'ghost', onclick: () => dlg.close() }, 'Abbrechen')));
+  dlg.showModal();
+}
+
+// --- schedules and triggers --------------------------------------------------------------------------------------
+const ACTION_HELP = 'Aktionen als JSON-Liste: {"type":"broadcast","text":"…"}, {"type":"command","command":"SaveWorld"}, {"type":"message","text":"Hallo {{player.name}}"}, {"type":"kick"}, {"type":"ban","minutes":60,"reason":"…"}, {"type":"discord","webhook":"admin","text":"…"}, {"type":"delay","seconds":30}, {"type":"note","text":"…","flag":"…"}, {"type":"saved","id":1,"params":{…}}. Ziel je Aktion: "target":"event" | "all" | "player" | ["karte"]. Platzhalter: {{player.name}} {{player.steamId}} {{map}} {{text}} {{match.1}} {{count}} {{time}}';
+function schedules(main) {
+  const tbody = h('tbody');
+  const load = safe(async () => {
+    const rows = await api('GET', '/api/schedules');
+    tbody.replaceChildren(...rows.map((s) => h('tr', {}, h('td', {}, s.name), h('td', { class: 'mono' }, s.cron), h('td', {}, s.enabled ? 'an' : h('span', { class: 'muted' }, 'aus')),
+      h('td', {}, s.targets ? JSON.parse(s.targets).join(', ') : 'alle'), h('td', { class: 'mono' }, s.actions), h('td', {}, fmt(s.last_run)), h('td', {}, fmt(s.next_run)),
+      h('td', {}, can('schedules.manage') ? [h('a', { onclick: () => editSchedule(s, load) }, 'bearbeiten'), ' · ', h('a', { onclick: safe(async () => { if (confirm(`${s.name} jetzt ausführen?`)) { await api('POST', `/api/schedules/${s.id}/run`); toast('ausgeführt'); load(); } }) }, 'jetzt')] : ''))));
+  });
+  main.append(h('h2', {}, 'Zeitpläne'), h('p', { class: 'hint' }, `Cron mit fünf Feldern (Minute Stunde Tag Monat Wochentag), Zeitzone ${S.meta?.timeZone}. Warnungen gehen vorher als ServerChat raus, z. B. 10 und 1 Minute vor einem Neustart.`),
+    can('schedules.manage') ? h('div', { class: 'row' }, h('button', { onclick: () => editSchedule(null, load) }, 'Neuer Zeitplan')) : null,
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Cron', 'Status', 'Karten', 'Aktionen', 'Zuletzt', 'Nächster', ''].map((t) => h('th', {}, t)))), tbody)));
+  load();
+}
+function editSchedule(s, after) {
+  const dlg = $('#dlg');
+  const name = h('input', { class: 'grow', value: s?.name || '', placeholder: 'Name' });
+  const cron = h('input', { class: 'mono', value: s?.cron || '*/30 * * * *' });
+  const enabled = h('input', { type: 'checkbox', checked: s ? Boolean(s.enabled) : true });
+  const maps = mapSelect(true);
+  const chosen = s?.targets ? JSON.parse(s.targets) : [];
+  for (const o of maps.options) o.selected = chosen.includes(o.value);
+  const actions = h('textarea', {}, s?.actions || '[{"type": "command", "command": "SaveWorld"}]');
+  const warnings = h('textarea', { style: 'min-height:60px' }, s?.warnings || '[]');
+  fill(dlg, h('h2', {}, s ? 'Zeitplan bearbeiten' : 'Neuer Zeitplan'), h('div', { class: 'row' }, name, cron, h('label', {}, enabled, ' aktiv')),
+    h('h3', {}, 'Karten (keine Auswahl = alle)'), maps, h('h3', {}, 'Aktionen'), h('div', { class: 'hint' }, ACTION_HELP), actions,
+    h('h3', {}, 'Warnungen vorher'), h('div', { class: 'hint mono' }, '[{"minutes": 10, "text": "Neustart in 10 Minuten"}, {"minutes": 1, "text": "Neustart in 1 Minute"}]'), warnings,
+    h('div', { class: 'row' }, h('button', { onclick: safe(async () => {
+      const t = selected(maps);
+      await api(s ? 'PUT' : 'POST', s ? `/api/schedules/${s.id}` : '/api/schedules', { name: name.value, cron: cron.value, enabled: enabled.checked, targets: t.length ? t : 'all', actions: JSON.parse(actions.value), warnings: JSON.parse(warnings.value || '[]') });
+      dlg.close(); after();
+    }) }, 'Speichern'), s ? h('button', { class: 'danger', onclick: safe(async () => { if (!confirm('Löschen?')) return; await api('DELETE', `/api/schedules/${s.id}`); dlg.close(); after(); }) }, 'Löschen') : null,
+    h('button', { class: 'ghost', onclick: () => dlg.close() }, 'Abbrechen')));
+  dlg.showModal();
+}
+const TRIGGER_LABEL = { join: 'Spieler betritt Karte', 'first-join': 'erster Besuch im Cluster', 'first-join-map': 'erster Besuch auf der Karte', leave: 'Spieler verlässt Karte', chat: 'Chatnachricht', log: 'Spiellog-Zeile', 'map-online': 'Karte online', 'map-offline': 'Karte offline', 'ban-kick': 'gebannter Spieler gekickt' };
+function triggers(main) {
+  const tbody = h('tbody');
+  const load = safe(async () => {
+    const rows = await api('GET', '/api/triggers');
+    tbody.replaceChildren(...rows.map((t) => h('tr', {}, h('td', {}, t.name), h('td', {}, TRIGGER_LABEL[t.event] || t.event), h('td', { class: 'mono' }, t.cond || ''), h('td', {}, t.enabled ? 'an' : h('span', { class: 'muted' }, 'aus')),
+      h('td', {}, t.maps ? JSON.parse(t.maps).join(', ') : 'alle'), h('td', { class: 'mono' }, t.actions), h('td', {}, `${t.fired}× · ${fmt(t.last_fired)}`),
+      h('td', {}, can('triggers.manage') ? h('a', { onclick: () => editTrigger(t, load) }, 'bearbeiten') : ''))));
+  });
+  main.append(h('h2', {}, 'Trigger'), h('p', { class: 'hint' }, 'Ereignis → Bedingung → Aktionen. Beispiele: Begrüßung beim ersten Besuch, Antwort auf das Chat-Stichwort „!discord“, Admin-Befehle im Spiel nach Discord melden.'),
+    can('triggers.manage') ? h('div', { class: 'row' }, h('button', { onclick: () => editTrigger(null, load) }, 'Neuer Trigger')) : null,
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Ereignis', 'Bedingung', 'Status', 'Karten', 'Aktionen', 'Ausgelöst', ''].map((x) => h('th', {}, x)))), tbody)));
+  load();
+}
+function editTrigger(t, after) {
+  const dlg = $('#dlg');
+  const cond = t?.cond ? JSON.parse(t.cond) : {};
+  const name = h('input', { class: 'grow', value: t?.name || '', placeholder: 'Name' });
+  const event = h('select', {}, (S.meta?.triggerEvents || []).map((e) => h('option', { value: e, selected: t?.event === e }, TRIGGER_LABEL[e] || e)));
+  const match = h('input', { class: 'grow mono', value: cond.match || '', placeholder: 'Regulärer Ausdruck für den Text (optional), z. B. ^!discord' });
+  const types = h('input', { class: 'mono', value: (cond.types || []).join(','), placeholder: 'Log-Arten, z. B. admin,tame' });
+  const cooldown = h('input', { type: 'number', value: t?.cooldown || 0, style: 'width:90px' });
+  const enabled = h('input', { type: 'checkbox', checked: t ? Boolean(t.enabled) : true });
+  const maps = mapSelect(true);
+  const chosen = t?.maps ? JSON.parse(t.maps) : [];
+  for (const o of maps.options) o.selected = chosen.includes(o.value);
+  const actions = h('textarea', {}, t?.actions || '[{"type": "message", "text": "Willkommen {{player.name}}! Regeln und Discord findest du auf der Webseite."}]');
+  fill(dlg, h('h2', {}, t ? 'Trigger bearbeiten' : 'Neuer Trigger'), h('div', { class: 'row' }, name, event, h('label', {}, enabled, ' aktiv')),
+    h('div', { class: 'row' }, match, types, h('label', {}, 'Sperrzeit (s) ', cooldown)), h('h3', {}, 'Karten (keine Auswahl = alle)'), maps,
+    h('h3', {}, 'Aktionen'), h('div', { class: 'hint' }, ACTION_HELP), actions,
+    h('div', { class: 'row' }, h('button', { onclick: safe(async () => {
+      const c = {}; if (match.value.trim()) c.match = match.value.trim(); if (types.value.trim()) c.types = types.value.split(',').map((x) => x.trim()).filter(Boolean);
+      await api(t ? 'PUT' : 'POST', t ? `/api/triggers/${t.id}` : '/api/triggers', { name: name.value, event: event.value, enabled: enabled.checked, maps: selected(maps), cond: Object.keys(c).length ? c : null, cooldown: Number(cooldown.value), actions: JSON.parse(actions.value) });
+      dlg.close(); after();
+    }) }, 'Speichern'), t ? h('button', { class: 'danger', onclick: safe(async () => { if (!confirm('Löschen?')) return; await api('DELETE', `/api/triggers/${t.id}`); dlg.close(); after(); }) }, 'Löschen') : null,
+    h('button', { class: 'ghost', onclick: () => dlg.close() }, 'Abbrechen')));
+  dlg.showModal();
+}
+
+// --- audit and users -------------------------------------------------------------------------------------------
+function audit(main) {
+  const tbody = h('tbody');
+  const actor = h('input', { placeholder: 'Wer' });
+  const load = safe(async () => {
+    const rows = await api('GET', `/api/audit?actor=${encodeURIComponent(actor.value)}`);
+    tbody.replaceChildren(...rows.map((a) => h('tr', {}, h('td', {}, fmt(a.ts)), h('td', {}, a.actor, h('div', { class: 'muted' }, a.actor_type)), h('td', {}, a.action), h('td', { class: 'mono' }, a.target || ''),
+      h('td', {}, h('span', { class: a.result === 'ok' ? 'okc' : 'err' }, a.result)), h('td', { class: 'mono', style: 'max-width:600px;word-break:break-word' }, a.message || '', a.detail ? h('div', { class: 'muted' }, a.detail.slice(0, 400)) : null))));
+  });
+  actor.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(); });
+  main.append(h('h2', {}, 'Audit-Log'), h('p', { class: 'hint' }, 'Jede Aktion über Oberfläche, API, Kommandozeile, Zeitplan und Trigger sowie Banns von Admins im Spiel, jeweils mit Urheber und Ergebnis.'),
+    h('div', { class: 'row' }, actor, h('button', { onclick: load }, 'Filtern')),
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Zeit', 'Wer', 'Aktion', 'Ziel', 'Ergebnis', 'Details'].map((t) => h('th', {}, t)))), tbody)));
+  load();
+}
+function users(main) {
+  const tbody = h('tbody');
+  const load = safe(async () => {
+    const rows = await api('GET', '/api/users');
+    tbody.replaceChildren(...rows.map((u) => {
+      const role = h('select', {}, S.meta.roles.map((r) => h('option', { value: r, selected: u.role === r }, r)));
+      role.addEventListener('change', safe(async () => { await api('PUT', `/api/users/${u.name}`, { role: role.value }); toast('Rolle geändert'); }));
+      return h('tr', {}, h('td', {}, u.name), h('td', {}, role), h('td', {}, u.disabled ? h('span', { class: 'badge bad' }, 'gesperrt') : 'aktiv'), h('td', {}, fmt(u.last_login)), h('td', {}, u.hasToken ? 'ja' : ''),
+        h('td', {}, h('a', { onclick: safe(async () => { await api('PUT', `/api/users/${u.name}`, { disabled: !u.disabled }); load(); }) }, u.disabled ? 'entsperren' : 'sperren'), ' · ',
+          h('a', { onclick: safe(async () => { const pw = prompt('Neues Passwort (mind. 10 Zeichen)'); if (pw) { await api('PUT', `/api/users/${u.name}`, { password: pw }); toast('Passwort gesetzt'); } }) }, 'Passwort'), ' · ',
+          h('a', { onclick: safe(async () => { if (!confirm('Neuen API-Token erzeugen? Ein alter wird ungültig.')) return; const r = await api('POST', `/api/users/${u.name}/token`); prompt('API-Token (wird nur jetzt angezeigt):', r.token); load(); }) }, 'API-Token'), ' · ',
+          h('a', { onclick: safe(async () => { if (confirm(`${u.name} löschen?`)) { await api('DELETE', `/api/users/${u.name}`); load(); } }) }, 'löschen')));
+    }));
+  });
+  const name = h('input', { placeholder: 'Name' });
+  const role = h('select', {}, S.meta.roles.map((r) => h('option', { value: r }, r)));
+  main.append(h('h2', {}, 'Benutzer und Rollen'),
+    h('table', { style: 'margin-bottom:12px' }, h('thead', {}, h('tr', {}, ['Rolle', 'Rechte'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, h('tr', {}, h('td', {}, 'viewer'), h('td', {}, 'Karten, Spieler, Chat und Log sehen')), h('tr', {}, h('td', {}, 'moderator'), h('td', {}, '+ Chat, Kick, Bann, Notizen, gespeicherte Befehle')),
+        h('tr', {}, h('td', {}, 'admin'), h('td', {}, '+ Konsole (geprüfte Befehle), Banns aufheben, Befehle, Zeitpläne und Trigger verwalten, Audit-Log')),
+        h('tr', {}, h('td', {}, 'superadmin'), h('td', {}, '+ ungetestete Befehle, Benutzer und Rollen')))),
+    h('div', { class: 'bar row' }, name, role, h('button', { onclick: safe(async () => { const r = await api('POST', '/api/users', { name: name.value, role: role.value }); prompt(`Startpasswort für ${r.name} (nur jetzt sichtbar):`, r.password); name.value = ''; load(); }) }, 'Anlegen')),
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Rolle', 'Status', 'Letzte Anmeldung', 'API-Token', ''].map((t) => h('th', {}, t)))), tbody)));
+  load();
+}
+const changePassword = safe(async () => {
+  const old = prompt('Altes Passwort'); if (!old) return;
+  const pw = prompt('Neues Passwort (mind. 10 Zeichen)'); if (!pw) return;
+  await api('POST', '/api/password', { old, password: pw }); toast('Passwort geändert');
+});
+
+// --- live updates --------------------------------------------------------------------------------------------------
+function connectStream() {
+  if (S.es) S.es.close();
+  const es = new EventSource('/api/stream');
+  S.es = es;
+  es.addEventListener('event', (msg) => {
+    const e = JSON.parse(msg.data);
+    if (e.map) { const f = (S.feeds[e.map] = S.feeds[e.map] || []); f.push(e); if (f.length > 300) f.splice(0, f.length - 300); }
+    if (S.view === 'dashboard' && e.map) {
+      const feed = document.querySelector(`.card[data-map="${CSS.escape(e.map)}"] .feed`);
+      if (feed) { const atEnd = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 30; feed.append(evLine(e)); if (atEnd) feed.scrollTop = feed.scrollHeight; }
+    }
+    if (S.view === 'activity' && S.activityList && S.activityFilter().live) {
+      const f = S.activityFilter();
+      if ((!f.map || f.map === e.map) && (!f.types || f.types.split(',').includes(e.type)) && (!f.q || `${e.text} ${e.name}`.toLowerCase().includes(f.q.toLowerCase()))) S.activityList.prepend(evLine(e, true));
+    }
+  });
+  const refresh = () => { clearTimeout(S.mt); S.mt = setTimeout(safe(async () => { S.maps = await api('GET', '/api/maps'); if (S.view === 'dashboard') refreshCards(); }), 300); };
+  es.addEventListener('player', refresh);
+  es.addEventListener('status', refresh);
+}
+function refreshCards() {
+  for (const m of S.maps) {
+    const card = document.querySelector(`.card[data-map="${CSS.escape(m.name)}"]`);
+    if (!card) continue;
+    card.querySelector('.head').replaceWith(cardHead(m));
+    card.querySelector('.players').replaceWith(cardPlayers(m));
+  }
+}
+
+async function boot() {
+  try { S.me = await api('GET', '/api/me'); } catch { S.me = null; render(); return; }
+  S.meta = await api('GET', '/api/meta');
+  S.maps = await api('GET', '/api/maps');
+  const recent = await api('GET', '/api/events?limit=600');
+  S.feeds = {};
+  for (const e of recent.reverse()) if (e.map) (S.feeds[e.map] = S.feeds[e.map] || []).push(e);
+  const v = location.hash.slice(1);
+  if (VIEWS.some(([id, , p]) => id === v && can(p))) S.view = v;
+  render();
+  connectStream();
+}
+window.addEventListener('hashchange', () => {
+  const v = location.hash.slice(1);
+  if (S.me && v !== S.view && VIEWS.some(([id, , p]) => id === v && can(p))) { S.view = v; render(); }
+});
+boot();
+</script>
+</body>
+</html>
