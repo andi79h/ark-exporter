@@ -549,6 +549,10 @@ ark-export edit diff-classes bereinigt.ark bereinigt-gespeichert.ark \
   - Keine eigene Zeile bekommen Komponenten, Buff-Daten, wilde Tiere (Team unter 50.000) und sonstige Actors wie Buffs oder Waffen in der Hand. Sie zählen unter `notRefunded`, ihr eingebetteter Inhalt bekommt trotzdem Zeilen.
 
 **Geprüft:**
+- **Gen2 mit Vergleichslauf** (26.11.2026, Testinstanz, dieselben Saves wie im Spieltest unten). Der Vergleichslauf war der unveränderte Save mit allen Mods. Der bereinigte Save von `remove-classes --package DinoStorage2 --package CraftableTributeTerminal` lief ohne die beiden Mods.
+  - Verloren gingen 472 Objekte, 367 davon auch im Vergleichslauf. Das sind Höhlen-`NPCZoneManager`, `InstancedFoliageActor` und rund 300 Items, die das Spiel bei jedem Laden mit neuer ItemID anlegt.
+  - Es bleiben genau die 105 Bionic-Giga-Eier, 10.003 Stück in 3 Erstattungszeilen für 3 Stämme (Vivarium, Kühlschrank, Tek-Lager).
+  - Ohne Vergleichslauf wären es 131 Zeilen für 5 Stämme gewesen.
 - **Echter Spiellauf:** Ein TheIsland-Save vor dem Start (`NewLaunchBackup`) und nach einer Testsitzung mit Spieler: 51.813 von 51.831 Objekten fanden sich nach Laden und Speichern wieder. Die 18 verlorenen sind wilde Tiere, eine gestorbene Spielerfigur samt Fäusten und Buffs sowie Komponenten.
 - **Gegen `remove-classes`:** Gen2 unverändert gegen die Ausgabe von `remove-classes --package DinoStorage2 --package CraftableTributeTerminal`. Die Erstattungsliste gleicht der von `remove-classes` bis auf vier Einträge, nämlich zwei Dino-Storage-Buffs und das Verwaltungsobjekt `DinoStorage2CCA_C`. Es bleiben 11.191 Einträge in 2.687 Zeilen für 168 Stämme.
 - **Laufzeit:** mit Vergleichslauf (vier Gen2-Saves) 14 s und 2,3 GB mit Node, 16 s und 5,2 GB mit Bun. Die Saves werden nacheinander gelesen.
@@ -654,7 +658,6 @@ Aufbau:
   - Lädt es Kryokapseln mit geleertem Sattelplatz? Im Gen2-Test kam keiner vor.
   - Welche Klasse nimmt es bei einem Kurznamen, den Kernspiel und Mod beide führen, wenn beide geladen sind? Der Spieltest zeigt nur, dass es unter den geladenen Klassen sucht.
   - Behalten Spieler nach `remap-classes` ihre Engramme? Dafür muss sich ein Spieler mit umgeschriebenem Profil anmelden.
-  - `diff-classes` mit einem vollständigen Vergleichslauf auf Gen2. Es sollte genau die 105 Bionic-Giga-Eier als Zusatzverlust melden. Die gespeicherten Saves des Spieltests liegen nicht mehr vor.
 - Save-Version 10–11 schreiben (Stored-Data-Blöcke), ASA.
 
 ## Quellen und Lizenz
