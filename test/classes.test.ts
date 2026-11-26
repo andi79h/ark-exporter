@@ -447,6 +447,25 @@ test('remove-classes: world, foreign inventories, cryopods, recovery list, refun
   assert.equal(v.embedded.propertyLists, v.embedded.propertyListsIdentical);
 });
 
+test('remove-classes: persistent data of removed buffs goes with them', () => {
+  const buff = `${MOD}/Buffs/ModBuff.ModBuff_C`;
+  const coreBuff = '/Game/PrimalEarth/CoreBlueprints/Buffs/Buff_Core.Buff_Core_C';
+  const buf = buildSave([
+    { cls: 'ModBuff_C', names: ['ModBuff_C_0'], loc: [0, 0, 0], props: [ref('MyBuffPersistentData', 1), int('TargetingTeam', TRIBE)], extra: Buffer.alloc(4) },
+    // Real saves flag buff data as items in the header.
+    { cls: 'PrimalBuffPersistentData', names: ['PrimalBuffPersistentData_0'], isItem: true, props: [path('ForPrimalBuffClass', BGC(buff)), str('ForPrimalBuffClassString', buff)], extra: Buffer.alloc(4) },
+    { cls: 'PrimalBuffPersistentData', names: ['PrimalBuffPersistentData_1'], isItem: true, props: [path('ForPrimalBuffClass', BGC(coreBuff)), str('ForPrimalBuffClassString', coreBuff)], extra: Buffer.alloc(4) },
+  ], { map: 'TestMap' });
+  const ed = SaveEditor.open(buf);
+  const { report: r, refunds } = removeClasses(ed, { packages: ['ModPack'], assetList: `${MOD}/Buffs/ModBuff` });
+  assert.equal(r.removed, 2);
+  assert.equal(r.buffDataRemoved, 1);
+  assert.deepEqual(r.pathReferencesLeft, {});
+  assert.deepEqual(refunds.map((x) => x.cls), ['ModBuff_C']);
+  const s = readSave(ed.write());
+  assert.deepEqual(s.objects.map((o) => o.names[0]), ['PrimalBuffPersistentData_1']);
+});
+
 test('remove-classes: class patterns refuse ambiguous names unless trusted', () => {
   const ev = 'Campfire\n' + REMOVE_ASSETS;
   let ed = SaveEditor.open(removeSave());
