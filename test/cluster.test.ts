@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { replaceFile } from '../src/cluster-cli.ts';
 import {
-  addItem, clusterEntries, itemArchetype, readCluster, readClusterTree, tributeItemEntry, writeClusterTree,
+  addItem, clusterEntries, itemArchetype, readCluster, readClusterTree, splitQuantity, tributeItemEntry, writeClusterTree,
 } from '../src/cluster.ts';
 import { readContainer } from '../src/container.ts';
 import { Archive } from '../src/archive.ts';
@@ -219,11 +219,11 @@ test('add-item: new item with free values, everything else unchanged', () => {
   const { tree, added } = addItem(readClusterTree(buf), {
     blueprint: "Blueprint'/Game/PrimalEarth/CoreBlueprints/Items/Armor/Riot/PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt'",
     stats: [0, 65535, 40000], quality: 5, rating: 99.5, durability: 1e6, colors: [3], customName: 'Treuebonus',
-    crafterName: 'Test Crafter', expiresIn: 3600,
+    crafterName: 'Test Crafter', lifetime: 3600,
   }, { now: 1_800_000_000, randomId: () => ids.shift()! });
   assert.deepEqual(added, {
     index: 2, itemId: [5, 6], blueprint: `BlueprintGeneratedClass ${RIOT}`, quantity: 1, quantityRaw: 0, allowRemoval: true,
-    uploadTime: 1_800_000_000, expiration: 1_800_003_600, owner: '123456789',
+    uploadTime: 1_800_000_000, expiration: 1_800_003_600, validUntil: 1_800_003_600, owner: '0',
   });
   const out = writeClusterTree(tree);
   const v = readCluster(out);
@@ -283,8 +283,42 @@ test('add-item: rejects what the file cannot hold', () => {
   assert.throws(() => addItem(tree(), { blueprint: bp, quantity: 2 ** 32 + 1 }), /quantity/);
   assert.throws(() => addItem(tree(), { blueprint: bp, durability: 1e39 }), /durability/);
   assert.throws(() => addItem(tree(), { blueprint: bp, expiration: 2 ** 32 }), /expiration/);
+  assert.throws(() => addItem(tree(), { blueprint: bp, uploadTime: 1, validUntil: 2 }), /either uploadTime or validUntil/);
+  assert.throws(() => addItem(tree(), { blueprint: bp, validUntil: 1000 }), /uploadTime/, 'before 1970 + lifetime');
+  assert.throws(() => addItem(tree(), { blueprint: bp, owner: -1 }), /outside UInt64/);
+  assert.throws(() => addItem(null, { blueprint: bp, owner: 'player' }), /no PlayerDataID/);
   assert.throws(() => addItem(tree(), { blueprint: bp, itemId: [300, 400] }), /already in the file/);
   assert.throws(() => addItem(tree(), { blueprint: 'Rex' }), /not an item class path/);
+});
+
+test('add-item: owner 0 by default, player on request (game test 2026-11-26)', () => {
+  const bp = '/Game/PrimalEarth/CoreBlueprints/Items/Armor/Riot/PrimalItemArmor_RiotShirt';
+  const plain = addItem(readClusterTree(clusterFile()), { blueprint: bp }, { now: 1_800_000_000 }).added;
+  assert.equal(plain.owner, '0', 'as the game writes its own uploads: the item waits at the obelisk');
+  const auto = addItem(readClusterTree(clusterFile()), { blueprint: bp, owner: 'player' }, { now: 1_800_000_000 }).added;
+  assert.equal(auto.owner, '123456789', 'the PlayerDataID of the file: ARK moves the item into the inventory');
+  assert.equal(addItem(null, { blueprint: bp, owner: 7 }).added.owner, '7');
+});
+
+test('add-item: validUntil moves the upload time, ExpirationTimeUTC follows', () => {
+  const bp = '/Game/PrimalEarth/CoreBlueprints/Items/Armor/Riot/PrimalItemArmor_RiotShirt';
+  const now = 1_800_000_000;
+  const year = addItem(null, { blueprint: bp, validUntil: now + 365 * 86_400 }, { now }).added;
+  assert.equal(year.uploadTime, now + 364 * 86_400, 'the obelisk counts from UploadTime + 86400');
+  assert.equal(year.validUntil, now + 365 * 86_400);
+  assert.equal(year.expiration, year.validUntil, 'ExpirationTimeUTC as the server rewrites it');
+  const longer = addItem(null, { blueprint: bp, validUntil: now + 86_400, lifetime: 286_400 }, { now }).added;
+  assert.equal(longer.uploadTime, now - 200_000, 'a server with TributeItemExpirationSeconds=286400');
+  const plain = addItem(null, { blueprint: bp }, { now }).added;
+  assert.deepEqual([plain.uploadTime, plain.validUntil, plain.expiration], [now, now + 86_400, now + 86_400]);
+});
+
+test('splitQuantity: stacks of at most N pieces', () => {
+  assert.deepEqual(splitQuantity(1000, 300), [300, 300, 300, 100]);
+  assert.deepEqual(splitQuantity(300, 300), [300]);
+  assert.deepEqual(splitQuantity(1, 100), [1]);
+  assert.throws(() => splitQuantity(0, 10), /quantity/);
+  assert.throws(() => splitQuantity(10, 0), /stack/);
 });
 
 const INGOT = '/Game/PrimalEarth/CoreBlueprints/Resources/PrimalItemResource_MetalIngot.PrimalItemResource_MetalIngot_C';
@@ -383,9 +417,21 @@ test('cluster CLI: check, add-item --out / --in-place, refuses when the file cha
     assert.equal(report.embedded.identical, 2);
 
     const out = join(dir, 'out');
-    const r1 = run('add-item', src, '--blueprint', RIOT, '--stats', '0,1000', '--expires-at', '2027-01-01T00:00:00Z', '--out', out);
+    const r1 = run('add-item', src, '--blueprint', RIOT, '--stats', '0,1000', '--valid-until', '2027-01-01T00:00:00Z', '--out', out);
     assert.equal(r1.status, 0, r1.stderr);
-    assert.equal(JSON.parse(r1.stdout).added.expiration, Date.parse('2027-01-01T00:00:00Z') / 1000);
+    const until = Date.parse('2027-01-01T00:00:00Z') / 1000;
+    assert.deepEqual([JSON.parse(r1.stdout).added.validUntil, JSON.parse(r1.stdout).added.uploadTime], [until, until - 86_400]);
+    assert.equal(JSON.parse(r1.stdout).added.owner, '0', 'default owner 0');
+    const old = run('add-item', src, '--blueprint', RIOT, '--expires-at', '2027-01-01T00:00:00Z', '--out', join(dir, 'old-name'));
+    assert.equal(JSON.parse(old.stdout).added.validUntil, until, '--expires-at is the old name of --valid-until');
+    const both = run('add-item', src, '--blueprint', RIOT, '--valid-for', '600', '--upload-time', '0', '--out', join(dir, 'both'));
+    assert.notEqual(both.status, 0, 'only one of --valid-for, --valid-until, --upload-time');
+    const mine = run('add-item', src, '--blueprint', RIOT, '--owner', 'player', '--valid-for', '3600', '--lifetime', '600', '--out', join(dir, 'mine'));
+    assert.equal(mine.status, 0, mine.stderr);
+    const m = JSON.parse(mine.stdout).added;
+    assert.equal(m.owner, '123456789');
+    assert.equal(m.validUntil - m.uploadTime, 600);
+    assert.ok(Math.abs(m.validUntil - (Date.now() / 1000 + 3600)) < 60);
     assert.deepEqual([JSON.parse(r1.stdout).added.quantity, JSON.parse(r1.stdout).added.quantityRaw], [1, 0]);
     assert.equal(readCluster(readFileSync(out)).items.length, 3);
     assert.ok(readFileSync(src).equals(clusterFile()), '--out leaves the input alone');
@@ -405,6 +451,12 @@ test('cluster CLI: check, add-item --out / --in-place, refuses when the file cha
     assert.equal(run('add-item', src, '--blueprint', INGOT, '--disallow-removal', '--out', locked).status, 0);
     assert.equal(storedInfos(readFileSync(locked)).at(-1)!.bAllowRemovalFromInventory, false);
     assert.notEqual(run('add-item', src, '--blueprint', INGOT, '--quantity', '0', '--out', join(dir, 'zero')).status, 0, 'at least one piece');
+    const split = join(dir, 'split');
+    const r4 = run('add-item', src, '--blueprint', INGOT, '--quantity', '1000', '--stack', '300', '--out', split);
+    assert.equal(r4.status, 0, r4.stderr);
+    assert.deepEqual(JSON.parse(r4.stdout).added.map((a: { quantity: number }) => a.quantity), [300, 300, 300, 100]);
+    assert.deepEqual(storedQuantities(readFileSync(split)).slice(-4), [299, 299, 299, 99]);
+    assert.equal(new Set(JSON.parse(r4.stdout).added.map((a: { itemId: number[] }) => a.itemId.join(':'))).size, 4, 'one ItemID each');
 
     const r2 = run('add-item', src, '--blueprint', RIOT, '--in-place', '--backup', join(dir, 'bak'));
     assert.equal(r2.status, 0, r2.stderr);

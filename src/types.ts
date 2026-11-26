@@ -48,7 +48,9 @@ export class Blob {
 /** A byte array that turned out to be a complete embedded archive (e.g. a creature inside a cryopod). */
 export class Embedded {
   readonly objects: GameObject[];
-  constructor(objects: GameObject[]) { this.objects = objects; }
+  /** The archive as stored (a view into the file buffer), e.g. to copy a creature into a cluster file. */
+  readonly bytes: Buffer | null;
+  constructor(objects: GameObject[], bytes: Buffer | null = null) { this.objects = objects; this.bytes = bytes; }
   toJSON(): Value {
     return jsonContext.onEmbedded ? jsonContext.onEmbedded(this) : { $objects: this.objects.length };
   }

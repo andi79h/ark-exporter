@@ -229,16 +229,20 @@ export interface NewItem {
   /**
    * Number of pieces, 1 or more. Default 1. Written as ItemQuantity = pieces - 1: in real files full
    * stacks of 100 store 99, of 50 store 49, single items and blueprints 0; ItemQuantity 100 gave
-   * 101 pieces in the game.
+   * 101 pieces in the game. More than the stack size is cut on download (1000 ingots gave 300, the
+   * rest was lost): split large amounts with splitQuantity.
    */
   quantity?: number;
   /** ItemQualityIndex 0..5 (primitive ... ascendant). Default 0. */
   quality?: number;
   /** ItemRating (float). Default 0. */
   rating?: number;
-  /** ItemDurability, the current durability (float). Default 0. */
+  /**
+   * ItemDurability, the current durability as an absolute value (float). Default 0. The game does not
+   * clamp it: 100000 on a riot shirt (maximum 720) gave 139 times the maximum.
+   */
   durability?: number;
-  /** ItemStatValues 0..7 (UInt16 each), missing entries are 0. */
+  /** ItemStatValues 0..7 (UInt16 each), missing entries are 0. The game takes them unclamped (65535 included). */
   stats?: number[];
   /** ItemColorID 0..5 (Int16 each). */
   colors?: number[];
@@ -256,13 +260,18 @@ export interface NewItem {
   crafterTribe?: string | null;
   /** WeaponClipAmmo. Default 0. */
   ammo?: number;
-  /** OwnerPlayerDataID. Default: PlayerDataID of the uploaded character, else the owner of the existing items, else 0. */
-  owner?: bigint | number | string;
-  /** UploadTime, unix seconds (int32). Default: now. */
+  /** OwnerPlayerDataID, see ItemOwner. Default 0: the item waits at the obelisk. */
+  owner?: ItemOwner;
+  /** UploadTime, unix seconds (int32). Default: now. Use validUntil to keep an item longer than a day. */
   uploadTime?: number;
-  /** ExpirationTimeUTC = uploadTime + expiresIn. Default 86400, as written by the servers of the cluster. */
-  expiresIn?: number;
-  /** Absolute ExpirationTimeUTC (UInt32, unix seconds). Wins over expiresIn. */
+  /** Last moment the item can be downloaded (unix seconds); sets UploadTime = validUntil - lifetime. */
+  validUntil?: number;
+  /** The server's TributeItemExpirationSeconds. Default 86400 (ASE default). */
+  lifetime?: number;
+  /**
+   * Raw ExpirationTimeUTC (UInt32). Default UploadTime + lifetime, as the server rewrites it. The
+   * game ignores the field: only UploadTime + TributeItemExpirationSeconds decides (game test 2026-11-26).
+   */
   expiration?: number;
   /** ItemID1, ItemID2. Default: random, below 10^9 like the game's, unique within the file. */
   itemId?: [number, number];
@@ -279,10 +288,52 @@ export interface AddedItem {
   allowRemoval: boolean;
   uploadTime: number;
   expiration: number;
+  /** UploadTime + lifetime: the last moment the obelisk hands the item out. */
+  validUntil: number;
   owner: string;
 }
 
-export const DEFAULT_EXPIRES_IN = 86_400;
+/** Seconds an upload stays at the obelisk: the server's TributeItemExpirationSeconds (ASE default). */
+export const DEFAULT_LIFETIME = 86_400;
+/** @deprecated use DEFAULT_LIFETIME */
+export const DEFAULT_EXPIRES_IN = DEFAULT_LIFETIME;
+
+/**
+ * OwnerPlayerDataID of a new upload (game test 2026-11-26):
+ * - 0: what the game writes for its own uploads; the item waits in the obelisk list.
+ * - 'player': the PlayerDataID of the file's character; ARK moves the item into the inventory as soon
+ *   as the player opens an obelisk, transmitter or terminal, without asking.
+ * - any other number: written as given (a foreign ID behaves like 0).
+ */
+export type ItemOwner = bigint | number | string;
+
+export function resolveOwner(c: TreeContainer | null, owner: ItemOwner | undefined): bigint {
+  if (owner === undefined) return 0n;
+  if (owner === 'player') {
+    const id = defaultOwner(c);
+    if (id === 0n) throw new RangeError('owner "player": the file has no PlayerDataID (no uploaded character, no owned items); pass the ID');
+    return id;
+  }
+  const v = BigInt(owner);
+  if (v < 0n || v >= 2n ** 64n) throw new RangeError(`owner ${v} outside UInt64`);
+  return v;
+}
+
+/**
+ * UploadTime and ExpirationTimeUTC of a new upload. The obelisk shows and hands out an upload while
+ * UploadTime + TributeItemExpirationSeconds lies in the future and ignores ExpirationTimeUTC; a later
+ * UploadTime keeps an item longer (shown as 95:59 for three days, 8783:59 for a year). Uploads past
+ * that are dropped the next time the server writes the file.
+ */
+export function uploadTiming(
+  t: { uploadTime?: number; validUntil?: number; lifetime?: number; expiration?: number }, now: number,
+): { uploadTime: number; expiration: number; validUntil: number } {
+  if (t.uploadTime !== undefined && t.validUntil !== undefined) throw new RangeError('give either uploadTime or validUntil, not both');
+  const lifetime = checkInt(t.lifetime ?? DEFAULT_LIFETIME, 1, 2 ** 31 - 1, 'lifetime');
+  const uploadTime = checkInt(t.validUntil !== undefined ? t.validUntil - lifetime : (t.uploadTime ?? now), 0, 2 ** 31 - 1, 'uploadTime');
+  const expiration = checkInt(t.expiration ?? uploadTime + lifetime, 0, 2 ** 32 - 1, 'expiration');
+  return { uploadTime, expiration, validUntil: uploadTime + lifetime };
+}
 
 /**
  * "BlueprintGeneratedClass /Game/A/B.B_C" for any of:
@@ -328,7 +379,8 @@ export function itemIds(c: TreeContainer | null): Set<string> {
   return out;
 }
 
-function defaultOwner(c: TreeContainer | null): bigint {
+/** PlayerDataID of the uploaded character, else the most common owner of the items, else 0. */
+export function defaultOwner(c: TreeContainer | null): bigint {
   const player = clusterEntries(c, 'ArkPlayerData')[0];
   const id = player ? findProperty(player, 'PlayerDataID')?.value : undefined;
   if (typeof id === 'bigint') return id;
@@ -426,6 +478,15 @@ export function tributeItemEntry(f: {
   ];
 }
 
+/** Pieces per entry for `total` pieces in stacks of at most `stack`: 1000 by 300 gives 300, 300, 300, 100. */
+export function splitQuantity(total: number, stack: number): number[] {
+  checkInt(total, 1, 2 ** 32, 'quantity');
+  checkInt(stack, 1, 2 ** 32, 'stack');
+  const out: number[] = [];
+  for (let left = total; left > 0; left -= stack) out.push(Math.min(stack, left));
+  return out;
+}
+
 /** Random IDs in the range the game uses (0 < id < 10^9). */
 export const randomItemId = (): [number, number] => [randomInt(1, 1_000_000_000), randomInt(1, 1_000_000_000)];
 
@@ -440,16 +501,14 @@ export function addItem(
   const data = clusterData(tree);
   const archetype = itemArchetype(item.blueprint);
   const now = opts.now ?? Math.floor(Date.now() / 1000);
-  const uploadTime = checkInt(item.uploadTime ?? now, 0, 2 ** 31 - 1, 'uploadTime');
-  const expiration = checkInt(item.expiration ?? uploadTime + (item.expiresIn ?? DEFAULT_EXPIRES_IN), 0, 2 ** 32 - 1, 'expiration');
+  const { uploadTime, expiration, validUntil } = uploadTiming(item, now);
   const stats = item.stats ?? [];
   const colors = item.colors ?? [];
   if (stats.length > 8) throw new RangeError('at most 8 stat values');
   if (colors.length > 6) throw new RangeError('at most 6 colors');
   stats.forEach((v, i) => checkInt(v, 0, 65_535, `stat ${i}`));
   colors.forEach((v, i) => checkInt(v, -32_768, 32_767, `color ${i}`));
-  const owner = item.owner === undefined ? defaultOwner(c) : BigInt(item.owner);
-  if (owner < 0n || owner >= 2n ** 64n) throw new RangeError(`owner ${owner} outside UInt64`);
+  const owner = resolveOwner(c, item.owner);
   const taken = itemIds(c);
   let itemId: [number, number];
   if (item.itemId) {
@@ -488,7 +547,7 @@ export function addItem(
     tree,
     added: {
       index: list.length - 1, itemId, blueprint: archetype, quantity, quantityRaw: quantity - 1, allowRemoval, uploadTime,
-      expiration, owner: owner.toString(),
+      expiration, validUntil, owner: owner.toString(),
     },
   };
 }
