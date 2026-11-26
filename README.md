@@ -349,6 +349,12 @@ Wer ein Tier über eine Seele umfärbt, behält seine Paarungssperre. Ein nackte
 - Restsperre, DinoIDs, Werte und alle anderen Daten der Seele bleiben unverändert.
 - **Kryokapseln** nimmt `recolor` nicht an. Nach einem Download würfelt ihr Freilassen die Paarungssperre ohnehin neu.
 - **Abgelehnt** werden außerdem Seelen mit anderem Aufbau (Archiv nicht in `ByteArrays[0]` oder Farb-Bytes nicht in `ByteArrays[6]`).
+- **Spieltest am 26.11.2026:**
+  - Ein Weibchen mit 48,4 h Restsperre ging in eine Seele, die Seele hoch zum Obelisken.
+  - `recolor --dino` färbte sie in der Cluster-Datei von 23,-,-,-,21,8 auf 1,-,-,-,2,6.
+  - Nach dem Download trug die Seele die neuen Farben an allen vier Stellen, die Restzeit war unverändert.
+  - Das freigelassene Tier hatte die neuen Farben und 48,2 h Restsperre, nicht neu gewürfelt.
+  - Ob das Spiel die neuen Farben auch im Tooltip und am Symbol anzeigt, wurde nicht geprüft.
 - **Erprobt** an Kopien echter Daten:
   - Alle 34.745 Seelen aus den Spielständen von 15 Karten: Die Farbtexte wurden überall erkannt, die Tooltips bei allen 34.693, die Farben führen.
   - Alle 4 Seelen in Kopien von 1.306 Cluster-Dateien, eine davon aus einem Spieltest: Sie ließen sich umfärben und zurücklesen. Bei der Seele aus dem Spieltest änderten sich nur Archiv, Farb-Bytes, Farbtexte und Tooltip, die übrigen Einträge der Datei blieben gleich.
@@ -630,7 +636,6 @@ Aufbau:
   - Warum bleibt die Startnotiz trotz `OwnerPlayerDataID` des Spielers am Obelisken liegen, statt ins Inventar zu wandern?
   - Was passiert bei `--owner player`, wenn das Inventar voll oder zu schwer ist?
   - Liest das Spiel `ColorSetNames`, oder genügen die IDs? (Die Farben kamen im Test am 20.11.2026 an, blieben beim erneuten Hochladen erhalten und gingen am 26.11.2026 auf die Jungen über.)
-  - Kommt ein in der Seele umgefärbtes Tier mit den neuen Farben und seiner alten Restsperre heraus, und zeigt die Seele vorher die neuen Farben?
 
 - Spielstände ändern, im Spiel zu klären:
   - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?
