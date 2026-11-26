@@ -4,6 +4,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { ClassRemapper, OwnerIndex, parseMapping, type Scope, type TeamInfo } from './classes.ts';
+import { balanceDecay, DAY, parseClassTable } from './balance.ts';
 import { SaveEditor } from './editor.ts';
 import { clearInventories, deleteObjects, moveObjects, type Owner, type Placement, refreshDecay } from './operations.ts';
 import { checkPlacement, copyObjects, exportPattern, parsePattern, placePattern } from './pattern.ts';
@@ -22,6 +23,11 @@ export const EDIT_USAGE = `Editing world saves (.ark, ASE save version 9) – wr
                                                    remove actors with components and items
   ark-export edit decay <Map.ark> SELECTION --out FILE [--days N]
                                                    restart the decay timer (LastInAllyRangeTime = now + N days)
+  ark-export edit balance-decay <Map.ark> --classes FILE --destroyable-after DAYS --removed-after DAYS
+                       --autodestroy-mult K [--period-mult P] [--min-team N] [--not-before DATE] [--undo]
+                       (--dry-run | --out FILE)
+                                                   same decay times for every material: shifts LastInAllyRangeTime
+                                                   per class (marked values, recomputed every run); --undo restores
   ark-export edit clear-inventory <Map.ark> SELECTION --out FILE [--engrams] [--equipped]
                                                    remove inventory items (engrams stay unless --engrams)
   ark-export edit move <Map.ark> SELECTION (--by DX,DY,DZ | --to X,Y,Z) [--rotate DEG] [--pivot X,Y,Z]
@@ -45,6 +51,11 @@ export const EDIT_USAGE = `Editing world saves (.ark, ASE save version 9) – wr
                                                    cryopods, soul traps) with a refund list per tribe
   ark-export edit asset-list <Content/Mods>...     asset paths of installed mods, input for --assets
 
+BALANCE-DECAY: the class table is tab-separated with a header: class (short name or full path) and the base
+time as base_s, days_base or period_s × class_mult × settings_mult. K and P must be the values the server
+applies; with others the game removes structures too early. Run it on every restart, before the start.
+--not-before DATE (ISO 8601): nothing becomes due for removal before then; the save's file time maps it to
+game time. At most removed-after − destroyable-after days ahead.
 SELECTION (at least one of tribe, owner, box, radius, class):
   --tribe ID             TargetingTeam (tribe id, or player id of solo players)
   --owner NAME           OwnerName / TribeName, exact (case-insensitive)
@@ -317,6 +328,9 @@ export async function editCommand(argv: string[]): Promise<number> {
     cluster: { type: 'string' }, 'trust-short-names': { type: 'boolean', default: false }, report: { type: 'string' },
     'dry-run': { type: 'boolean', default: false }, 'out-dir': { type: 'string' }, package: { type: 'string', multiple: true },
     refund: { type: 'string' }, grid: { type: 'string' },
+    classes: { type: 'string' }, 'destroyable-after': { type: 'string' }, 'removed-after': { type: 'string' },
+    'autodestroy-mult': { type: 'string' }, 'period-mult': { type: 'string' }, 'min-team': { type: 'string' },
+    undo: { type: 'boolean', default: false }, 'not-before': { type: 'string' },
   } as const;
   const { values: v, positionals } = parseArgs({ args, options: opts, allowPositionals: true });
   const values = v as Values;
@@ -361,6 +375,32 @@ export async function editCommand(argv: string[]): Promise<number> {
       const days = number(values.days as string | undefined, '--days') ?? 0;
       const r = refreshDecay(ed, chosen.map((e) => e.index), { extraSeconds: days * 86_400 });
       return finish(input, ed, values, { operation: 'decay', selected: chosen.length, days, ...r });
+    }
+    case 'balance-decay': {
+      const need = (k: string): number => {
+        const x = number(values[k] as string | undefined, `--${k}`);
+        if (x === undefined) throw new Error(`--${k} is required`);
+        return x;
+      };
+      if (!values.classes) throw new Error('--classes FILE is required');
+      const table = parseClassTable(readFileSync(values.classes as string, 'utf8'));
+      const params = {
+        destroyableAfter: need('destroyable-after') * DAY, removedAfter: need('removed-after') * DAY,
+        autoDestroyMult: need('autodestroy-mult'), periodMult: number(values['period-mult'] as string | undefined, '--period-mult') ?? 1,
+        minTeam: number(values['min-team'] as string | undefined, '--min-team') ?? 50_000,
+      };
+      const { ed, world } = load(input);
+      let notBefore: number | undefined;
+      if (values['not-before'] !== undefined) {
+        const at = Date.parse(values['not-before'] as string);
+        if (!Number.isFinite(at)) throw new Error(`--not-before: not a date: ${values['not-before']}`);
+        // The game writes the save when the map stops: the file time is the wall clock of ed.gameTime.
+        notBefore = ed.gameTime + (at - statSync(input).mtimeMs) / 1000;
+      }
+      const r = balanceDecay(ed, world, table, { ...params, notBefore }, { undo: values.undo === true });
+      if (values['dry-run']) { writeReport(values, input, r as unknown as Record<string, unknown>); print({ dryRun: true, ...r }); return 0; }
+      if (!r.changed) { writeReport(values, input, r as unknown as Record<string, unknown>); print({ ...r, out: null, note: 'nothing to change, no file written' }); return 0; }
+      return finish(input, ed, values, r as unknown as Record<string, unknown>);
     }
     case 'clear-inventory': {
       const { ed, world } = load(input);
