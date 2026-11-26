@@ -87,6 +87,8 @@ export interface RemovalReport {
   /** Path references to removed classes left in other objects, by property. */
   pathReferencesLeft: Record<string, number>;
   engramsRemoved: number;
+  /** PrimalBuffPersistentData of buffs of removed classes, removed with them (not in the refund list). */
+  buffDataRemoved: number;
   /** Container counters (CurrentItemCount, ResourceCount) set to what is left. */
   countersSynced: number;
   assetList: boolean;
@@ -461,10 +463,19 @@ export function removeClasses(ed: SaveEditor, target: RemovalTarget): { report: 
   const seenActors = new Set<string>();
   const seenItems = new Set<string>();
   const itemRoots = new Set<number>();
+  const buffData = new Set<number>();
   for (let i = 0; i < ed.size; i++) {
     if (!ed.exists(i) || closure.has(i)) continue;
     const copy = ed.get(i);
     const isItem = copy.isItem !== 0;
+    // Persistent data of a buff of a removed class (PrimalBuffPersistentData, a core class): the
+    // game drops it on load once the buff class is gone (Gen2 test run), so it goes with the buff.
+    // Real saves flag these objects as items in the header.
+    const forBuff = prop(copy.props, 'ForPrimalBuffClass');
+    if (forBuff && typeof forBuff === 'object' && 'path' in forBuff && typeof forBuff.path === 'string' && isPath(forBuff.path)) {
+      buffData.add(i);
+      continue;
+    }
     // The game writes some actors twice; both copies change, the refund counts once.
     const key = isItem ? itemKey(copy.props) : copy.names.length === 1 ? `${copy.cls}|${copy.names[0]}` : null;
     const seen = key !== null && (isItem ? seenItems : seenActors).has(key);
@@ -493,8 +504,9 @@ export function removeClasses(ed: SaveEditor, target: RemovalTarget): { report: 
     ctx.pathRefs = outer;
   }
   ctx.silent = false;
-  if (itemRoots.size) {
+  if (itemRoots.size || buffData.size) {
     for (const i of itemRoots) roots.add(i);
+    for (const i of buffData) roots.add(i);
     closure = ownedClosure(ed, roots);
   }
 
@@ -506,6 +518,7 @@ export function removeClasses(ed: SaveEditor, target: RemovalTarget): { report: 
   for (const i of [...closure].sort((a, b) => a - b)) {
     const h = ed.header(i);
     if (!h.isItem && h.names.length > 1) continue;
+    if (buffData.has(i)) continue;
     const props = ed.props(i);
     if (h.isItem) {
       const a = owners.holder(i);
@@ -545,7 +558,7 @@ export function removeClasses(ed: SaveEditor, target: RemovalTarget): { report: 
         notRewritable: ctx.notRewritable, unremovable: ctx.unremovable,
       },
       componentsKept: Object.fromEntries(ctx.componentsKept), pathReferencesLeft: topCounts(ctx.pathRefs, 100),
-      engramsRemoved, countersSynced, assetList: ev.hasAssetList,
+      engramsRemoved, buffDataRemoved: buffData.size, countersSynced, assetList: ev.hasAssetList,
     },
     refunds: ctx.refunds,
   };
