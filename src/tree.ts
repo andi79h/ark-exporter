@@ -503,7 +503,7 @@ export function propertyToValue(p: Property, ctx: ReadContext): Value {
       return isNativeStruct(p.inner) ? nativeToValue(p.inner, v as NativeValue) : treeToProps(v as Property[], ctx);
     case 'ArrayProperty': {
       if (Buffer.isBuffer(v)) {
-        const decoded = ctx.decodeBytes ? ctx.decodeBytes(p.name, v) : null;
+        const decoded = ctx.decodeBytes ? ctx.decodeBytes(p.name, v, ctx) : null;
         if (decoded !== null) return decoded;
         ctx.keepRaw(`byte array ${p.name}`, v.length);
         return new Blob(v, 'bytes');

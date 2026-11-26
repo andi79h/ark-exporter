@@ -16,7 +16,7 @@ Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**.
 | ARK: Survival Evolved, Save-Version 9 | vollständig, getestet mit Genesis 2 |
 | ARK: Survival Evolved, Save-Version 10–11 (neuere Spielstände) | teilweise: Welt und Eigenschaften wie bei 9; die angehängten Blöcke mit Stämmen, Spielern und Kryo-Speicher werden noch nicht gelesen und in `inspect` als „unaccounted“ gezählt; ohne Beispiel-Save ungetestet |
 | ARK: Survival Evolved, Save-Version 12 | noch nicht |
-| ARK: Survival Ascended (ASA) | noch nicht |
+| ARK: Survival Ascended (ASA), Save-Version 13–16 | `inspect` liest Welt-Save, Kryokapseln, `.arkprofile` und `.arktribe` und misst die Abdeckung; an 13 Karten eines Community-Clusters (Save-Version 16, 2,25 GB Nutzdaten) geprüft: 99,9999 % strukturiert gelesen (1,8 KB offen), alle 54.202 Kryokapseln und 19 Bauvorlagen vollständig, Profile und Stämme zu 100 %. Snapshot und Verlauf folgen |
 | ASE-Cluster-Dateien (`clusters/<ClusterId>/<SteamID>`) | lesen und byte-genau zurückschreiben, Items anhängen (`ark-export cluster`, siehe [Cluster-Dateien](#cluster-dateien)) |
 | ARK: Survival Evolved, Save-Version 9, **schreiben** | byte-genau zurückschreiben, Bauteile löschen, Verfall zurücksetzen, Inventare leeren, Basen verschieben und drehen, kopieren, Bau-Vorlagen (`ark-export edit`, siehe [Spielstände ändern](#spielstände-ändern)) |
 
@@ -25,7 +25,17 @@ ASA speichert ganz anders als ASE:
 - **Kopf und Positionen:** Kopf, Namenstabelle und Positionen stehen in der Tabelle `custom`.
 - **Eigenschaften:** Sie folgen dem Unreal-5-Format.
 
-Ein Leser dafür ist machbar; ASV enthält dafür ein eigenes Toolkit von rund 2.200 Zeilen. Zum Testen braucht es aber ASA-Spielstände.
+- **Eigenschafts-Köpfe:** Seit Unreal 5.5 (Save-Version 14, Juni 2025) steht der Typ als Baum im Kopf (`ArrayProperty<StructProperty<Vector>>`), dazu ein Flag-Byte mit Index, GUID und dem Wert von Booleans. Version 13 nutzt noch die UE4-Köpfe mit einem zusätzlichen Byte.
+- **Kryokapseln:** Der Inhalt ist mit zlib gepackt und darüber noch einmal byteweise kodiert. Er hat eine eigene Namenstabelle, kleine Namens-IDs kommen aus einer festen Tabelle des Spiels. Diese Tabelle ist nicht veröffentlicht; fehlende Einträge wurden aus der Reihenfolge der Eigenschaften in der Welt erschlossen.
+- **Positionen:** `ActorTransforms` hält je Actor die GUID, die Position (3 Doubles) und die Drehung als Quaternion (4 Doubles); der Export rechnet sie in Pitch, Yaw und Roll um.
+- **Foliage:** Hinter dem `InstancedFoliageActor` steht je Pflanzenart ein eingebettetes Unterobjekt mit eigener Eigenschaftsliste. `InstancesVisibility` hält ein Bit je Pflanze, also den Erntezustand.
+- **`GameModeCustomBytes`:** Ohne `-usestore` ein leeres Verzeichnis für Stämme und Spieler, danach die Bestenlisten der Missionen (Genesis).
+- **Bauvorlagen:** `PrimalItem_TemplateTablet` hält die Vorlage wie eine Kryokapsel (int32 1, Größe, zlib, dieselbe Byte-Kodierung). Darin stehen Autor, Name, Beschreibung, die Liste der Bauteil-Klassen und je Bauteil Klasse, Skin, relative Position und Drehung.
+- **Byte-Felder:** Bunker speichern ihre Rasterzellen als je 3 Byte (x, y, z). `SkillRanks` und `UnlockedShipSkillRanks` halten einen Rang 0–3 je Skill, `MembersRankGroups` die Ranggruppe je Stammesmitglied.
+
+Gemessen an 13 Karten (2,25 GB Nutzdaten, 2.149 Profile und Stämme) bleiben 1.779 Byte roh. Alle sind Nullbytes in Item-Daten, deren Bedeutung offen ist: je 1 Byte in den Feldern 1–5 der Polar-Gargoyle-Kryokapseln, 3 und 6 Byte in `HelperBotData`, 1 Byte in `ItemTraitData`. In Bauvorlagen sind je Bauteil ein int32 (0 oder 1), ein Name (immer „None“) und 36 Byte (immer 0) gelesen, aber nicht gedeutet. Lesezeit mit Bun auf einem Mac: 0,2–2,6 s je Karte.
+
+Der Leser steht in `src/asa/`. Als Vorlagen für das Format dienten [ark-sa-save-tools](https://github.com/Kakoen/ark-sa-save-tools) (Kakoen), [arkparser](https://github.com/vertyco/arkparser) (Vertyco, MIT) und das AsaSavegameToolkit aus ASV. `ark-export inspect <Map>_WP.ark` erkennt ASA an der SQLite-Kennung. Es misst die Abdeckung gegen die Nutzdaten der Datei, also alle Schlüssel und Werte. Die Seitenstruktur von SQLite wird getrennt ausgewiesen. Liegen `.arkprofile`- und `.arktribe`-Dateien im selben Ordner, prüft es diese mit. Mit `--limit N` liest es nur die ersten N Objekte.
 
 > **Datenschutz:** Exporte enthalten Steam-IDs, Spielernamen und zuletzt genutzte IP-Adressen aus den Profilen. Nicht veröffentlichen.
 
@@ -218,7 +228,7 @@ ark-export sync --out DIR [--exclude A,B] <SavedArks-Ordner | Map.ark>...
 ark-export mysql --out DIR [--name N] --mysql URL   neuesten Stand und Verlauf nach MySQL übertragen
 ark-export query <datei.sqlite> <SQL> [Parameter]   Zeilen als JSON Lines
 ark-export compare <alt.sqlite> <neu.sqlite>        welche Felder sich ändern
-ark-export cluster show|check|add-item ...          Cluster-Dateien, siehe unten
+ark-export cluster show|check|add-item|recolor ...  Cluster-Dateien, siehe unten
 ark-export edit verify|check|list|delete|decay|clear-inventory|move|copy|pattern-save|pattern-show|pattern-place ...
                                                     Spielstände ändern, siehe unten
 ```
@@ -243,7 +253,9 @@ Wichtige Felder in `ItemNetInfo`:
 - `ItemArchetype`: Klasse als `BlueprintGeneratedClass /Game/…/X.X_C`.
 - `ItemId`: `ItemID1`, `ItemID2` (je UInt32). In allen untersuchten Dateien kleiner als 10⁹; das Spiel erzeugt sie offenbar als Zufalls-Float × 10⁹.
 - `ItemStatValues[0..7]` (UInt16): allgemeine Qualität, Rüstung, Haltbarkeit (Maximum), Schaden, Munition, Kälteschutz, Gewicht, Hitzeschutz. Die Werte im Spiel ergeben sich daraus mit den Faktoren der jeweiligen Item-Klasse.
-- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen), `ItemRating` (Float), `ItemDurability` (Float, aktuelle Haltbarkeit), `ItemQuantity` (UInt32).
+- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen), `ItemRating` (Float), `ItemDurability` (Float, aktuelle Haltbarkeit).
+- `ItemQuantity` (UInt32): **Anzahl − 1.** Einzelne Items und Blaupausen haben 0, ein voller 100er-Stapel hat 99, ein voller 50er-Stapel 49. Im Spieltest am 20.11.2026 kamen bei `ItemQuantity` 100 genau 101 Stück an. `cluster show` meldet deshalb `quantity` (Anzahl, also `ItemQuantity` + 1) und daneben `quantityRaw` (gespeicherter Wert).
+- `bAllowRemovalFromInventory` (Bool): **muss `true` sein, sonst lässt ARK das Item nicht herunterladen.** Im Spieltest ließen sich `add-item`-Items mit `false` weder per Doppelklick noch per T herunterladen. In derselben Datei gingen Items mit `true` problemlos. In echten Uploads steht das Flag gemischt, bei Blaupausen fast immer `false`. `cluster show` meldet es als `allowRemoval`.
 - `ExpirationTimeUTC` (UInt32, Unix-Sekunden). In allen untersuchten Dateien genau `UploadTime + 86400`.
 - `OwnerPlayerDataID` (UInt64): die `PlayerDataID` des Spielers, der hochgeladen hat.
 
@@ -264,10 +276,50 @@ bin/ark-export cluster add-item 7656119xxxxxxxxxx \
   --custom-name "Treuebonus" --out /tmp/neu
 ```
 
-- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. `OwnerPlayerDataID` kommt aus dem hochgeladenen Charakter oder den vorhandenen Items. Ohne Angabe gilt: Menge 1, Ablauf nach 86 400 s. Leere Dateien bekommen die vollständige Struktur.
+- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. `OwnerPlayerDataID` kommt aus dem hochgeladenen Charakter oder den vorhandenen Items. `--quantity` ist die Anzahl im Spiel (mindestens 1); geschrieben wird `ItemQuantity` = Anzahl − 1, also `--quantity 100` → 99. `bAllowRemovalFromInventory` ist immer `true`, auch bei `--blueprint-copy`; `--disallow-removal` schreibt `false`, nur für Tests. Ohne Angabe gilt: 1 Stück, Ablauf nach 86 400 s. Leere Dateien bekommen die vollständige Struktur.
 - **Prüfung:** Vor dem Schreiben wird das Ergebnis neu gelesen. Danach muss es ein Item mehr haben und sich selbst byte-genau zurückschreiben lassen. Lässt sich schon die Eingabe nicht byte-genau zurückschreiben, bricht der Befehl ab.
 - **`--in-place`:** Sichert das Original zuerst nach `--backup`. Dann schreibt der Befehl eine temporäre Datei daneben und ersetzt die Datei per `rename`. Rechte, Besitzer und Gruppe bleiben erhalten. Hat jemand die Datei seit dem Lesen geändert, etwa der Spielserver, wird nichts ersetzt.
 - **Noch ungeklärt:** Ob der Server eingeschleuste Items so annimmt, ist im Spiel noch nicht getestet. Ebenso offen ist, ob er `ExpirationTimeUTC` oder `TributeItemExpirationSeconds` ab `UploadTime` beachtet und was bei sehr hohen Werten passiert. Siehe [Offen](#offen).
+
+### Tiere in Cluster-Dateien
+
+Ein hochgeladenes Tier ist ein Eintrag in `ArkTamedDinosData`. Das Tier selbst steckt in `DinoData` als eingebettetes Archiv mit drei Objekten: das Tier (`DinoID1/2`, `TamedName`, `TargetingTeam`, `TamerString` …), seine Status-Komponente (Stufen, Werte, Erfahrung) und seine Inventar-Komponente. Kryokapseln, Seelen von Dino Storage v2, dessen Recovery-Liste und S+-Vivarien speichern dasselbe Archiv in `CustomItemDatas[].CustomDataBytes.ByteArrays[].Bytes`. Beim Herunterladen baut das Spiel das Tier aus `DinoData` (`APrimalDinoCharacter::SpawnFromDinoDataEx`, mit dem Team des Abholers und einer Duplikatprüfung). Die übrigen Felder des Eintrags (Name, die zwölf `DinoStats`-Texte, Erfahrung) zeigt nur die Upload-Liste an.
+
+```
+ark-export cluster dinos <datei | save.ark>...       Tiere, die add-dino kopieren kann (mit Nummer für --pick)
+ark-export cluster add-dino <datei> --from DATEI (--pick N | --source-id A:B) (--out DATEI | --in-place --backup ORDNER) [Optionen]
+ark-export cluster copy-item <datei> --from DATEI --index N (--out DATEI | --in-place --backup ORDNER) [Optionen]
+```
+
+- **Quellen für `add-dino`:** Uploads, Seelen und Kryokapseln aus einer anderen Cluster-Datei. Aus einem Spielstand (`.ark`) kommen Tiere in Seelen, in der Dino-Storage-Recovery-Liste, in Kryokapseln und in Vivarien. Tiere, die frei in der Welt stehen, sind Objekte des Spielstands selbst und noch nicht kopierbar. Den Klassenpfad liefert der Upload-Eintrag, bei Kryokapseln `CustomDataClasses` und bei Seelen `CustomDataStrings`. Bei Vivarien kommt er von einem anderen Tier derselben Klasse, sonst gibt man ihn mit `--blueprint` an.
+- **Was sich ändert:** Das Tier bekommt neue, zufällige `DinoID1/2` (im Archiv und im Eintrag) und `UploadTime` = jetzt. Mit `--name` kommt ein neuer `TamedName` dazu. Alles andere bleibt Byte für Byte: Werte, Mutationen, Abstammung, Prägung, Farben, Inventar und Besitzfelder. Mit `--keep-id` bleiben die IDs erhalten; das ist nur sinnvoll, wenn das Original nicht mehr existiert. Stammt die Quelle aus einem Upload-Eintrag, werden dessen Felder übernommen. Sonst werden sie aus dem Archiv gebildet: `DinoName` als „Name - Lvl N (Art)“ und die `DinoStats`-Texte im Format des Spiels. Stufe = `BaseCharacterLevel` + `ExtraCharacterLevel`; Nahkampf und Tempo werden als (1 + Wert) × 100 % angezeigt.
+- **`copy-item`** kopiert ein hochgeladenes Item, etwa eine gefüllte Seele, in eine andere Datei. Es bekommt eine neue ItemID, Upload- und Ablaufzeit sowie die `OwnerPlayerDataID` des Ziels. Tiere darin erhalten neue IDs. Dino Storage führt die IDs zusätzlich als Text `"id1 id2"` und den Besitzer als SteamID in `CustomDataStrings`; beides wird ersetzt. Die SteamID kommt standardmäßig aus dem Namen der Zieldatei. `bAllowRemovalFromInventory` setzt der Befehl auf `true`, weil ARK Items mit `false` nicht herunterladen lässt (siehe oben). Die Ausgabe nennt den alten Wert (`allowRemovalBefore`). `--keep-removal-flag` übernimmt den Wert der Quelle und warnt, wenn er nicht `true` ist.
+- **Prüfungen:** wie bei `add-item`. Gelesen wird streng, und vor dem Schreiben wird alles erneut gelesen und zurückgeschrieben. Mit `--in-place` wird zuerst gesichert, dann atomar ersetzt. Ein Tier, dessen Archiv sich nicht byte-genau zurückschreiben lässt, wird nicht kopiert. Bei mehr als 20 Tieren in der Datei gibt es eine Warnung (`MaxTributeDinos`).
+- **Erprobt** an Kopien echter Dateien: 45 Cluster-Dateien mit 55 hochgeladenen Tieren, 7 Kryokapseln und 3 gefüllten Seelen lassen sich alle in leere und volle Dateien einsetzen. Aus einem echten Genesis-2-Spielstand gilt das für 4.570 von 4.571 Tieren aus Seelen, Recovery-Liste und Vivarien; die Ausnahme ist eine Ferox-Gestalt ohne Klassenpfad. Ob der Server ein so eingesetztes Tier zum Herunterladen anbietet, ist im Spiel zu prüfen (siehe [Offen](#offen)).
+
+### Tiere umfärben
+
+```
+ark-export cluster recolor <datei> (--dino A:B | --index N) --colors R=ID,... (--out DATEI | --in-place --backup ORDNER) [--names game|keep] [--any-color]
+```
+
+Setzt die Farben eines hochgeladenen Tiers. Der Spieler lädt das Tier am Obelisken hoch, `recolor` ändert die Farben in seiner Cluster-Datei, und beim Herunterladen baut das Spiel das Tier aus `DinoData` mit den neuen Farben. Bot und Client braucht es dafür nicht.
+
+- **Auswahl:** `--dino DinoID1:DinoID2` oder `--index N`, die Position in `ArkTamedDinosData`. Beides zeigen `cluster dinos` und `cluster show`, dort jetzt mit den sechs Farben.
+- **Farben:** `--colors 0=14,4=27` setzt Region 0 auf 14 (Black) und Region 4 auf 27 (Dino Dark Green). Nicht genannte Regionen bleiben, wie sie sind.
+- **Gültige IDs** stehen in `src/colors.ts`: 1–100 sind Tierfarben, 201–226 Färbemittel, 0 heißt „Region unbenutzt“. Andere Werte nimmt `recolor` nur mit `--any-color` an.
+- **Was sich ändert:**
+  - Im Tier-Objekt des Archivs ändern sich nur die `ColorSetIndices[0..5]` (ByteProperty).
+  - Eine Region, die bisher fehlte, wird in der Reihenfolge des Spiels eingefügt. Eine Region mit 0 fällt weg, so wie das Spiel unbenutzte Regionen nicht speichert.
+  - Zahme Tiere haben oft zusätzlich `ColorSetNames[0..5]`. Die schreibt `recolor` so, wie das Spiel sie schreibt, siehe unten. Mit `--names keep` bleiben sie unverändert.
+  - DinoIDs, Upload-Zeit, Werte, Mutationen, Abstammung und der Upload-Eintrag bleiben Byte für Byte erhalten.
+- **Farbnamen im Save:** Das Spiel speichert in `ColorSetNames` den Namen der *nächsten* Farbe. Bei ID 13 (Dark Grey) steht dort also „Black“, bei Färbemitteln „DyeIndex“ und bei ID 100 „Unused“. Das zeigt der Island-Spielstand eines Community-Servers mit 3.271 zahmen Tieren. Wilde Raptoren tragen in Region 0 genau die IDs ihrer natürlichen Farben laut `values.json`. Die IDs folgen also der Tabelle, und nur die Namen sind verschoben. Ob das Spiel die Namen überhaupt liest, ist offen.
+- **Prüfungen:** wie bei `add-dino`.
+  - Ein Archiv, das sich nicht byte-genau zurückschreiben lässt, wird nicht geändert.
+  - Danach muss das Tier mit derselben DinoID und genau den neuen Farben zurückgelesen werden.
+  - `--in-place` sichert zuerst. Hat der Spielserver die Datei inzwischen geschrieben, ersetzt der Befehl sie nicht.
+- **Erprobt** an Kopien echter Dateien: alle 55 hochgeladenen Tiere aus 45 Cluster-Dateien. Dabei wurden 33-mal eine leere Region eingefügt, 55-mal eine Region geleert und 132 Namen umgeschrieben. Sonst ändert sich nichts, auch nicht an den anderen Uploads derselben Datei. 29 der 55 Tiere hatten `ColorSetNames`.
+- **Noch nicht:** Tiere in hochgeladenen Kryokapseln und Seelen. Deren Archiv ist gleich aufgebaut, steckt aber in den Item-Daten.
 
 ## Spielstände ändern
 
@@ -443,10 +495,13 @@ Aufbau:
 - Cluster-Dateien, nur im Spiel auf einem Testcluster zu klären:
   - Wird ein angehängtes Item am Obelisken angezeigt und lässt es sich herunterladen?
   - Welche Zeit zählt beim Ablauf: `ExpirationTimeUTC` oder `UploadTime` + `TributeItemExpirationSeconds`? Und was bewirken 0 oder 4294967295?
-  - Bedeutet `ItemQuantity` 1 ein Stück? Hochgeladene Blaupausen haben 0 und zusätzlich alle `bIsEngram`. `--blueprint-copy` setzt dagegen nur `bIsBlueprint`, wie bei einer Blaupause aus einer Kiste.
+  - Hochgeladene Blaupausen haben zusätzlich alle `bIsEngram` und fast immer `bAllowRemovalFromInventory` = `false`. `--blueprint-copy` setzt dagegen nur `bIsBlueprint` und `bAllowRemovalFromInventory` = `true`. Lässt sich so eine Blaupause herunterladen? (Geklärt sind `ItemQuantity` = Anzahl − 1 und `bAllowRemovalFromInventory` = `true` bei anderen Items, siehe oben.)
   - Wird `ItemDurability` auf das Maximum aus `ItemStatValues[2]` begrenzt, wird `ItemRating` neu berechnet, und was gilt für sehr hohe Werte (65535)?
   - Spielt `OwnerPlayerDataID` beim Herunterladen eine Rolle?
   - Wann liest und schreibt der Server die Datei? Kann er eine gerade eingespielte Änderung mit einem älteren Stand überschreiben, etwa wenn der Spieler gleichzeitig hochlädt?
+  - Bietet der Server ein mit `add-dino` eingesetztes Tier zum Herunterladen an? Wem gehört es danach: dem Abholer, wie `SpawnFromDinoDataEx(…, ForTeam, …)` vermuten lässt, oder weiter dem alten Stamm aus `TargetingTeam`?
+  - Lässt sich eine mit `copy-item` kopierte Seele vom neuen Besitzer freilassen, obwohl darin noch die Stamm-ID des alten Besitzers steht?
+  - Kommt ein mit `recolor` umgefärbtes Tier mit den neuen Farben aus dem Obelisken, und erben seine Jungen sie? Liest das Spiel `ColorSetNames`, oder genügen die IDs?
 
 - Spielstände ändern, im Spiel zu klären:
   - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?

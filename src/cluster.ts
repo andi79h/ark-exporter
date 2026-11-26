@@ -72,7 +72,10 @@ export interface ClusterItem {
   /** ItemArchetype, e.g. "BlueprintGeneratedClass /Game/.../PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt_C". */
   blueprint: string | null;
   itemId: [number, number];
+  /** Number of pieces: ItemQuantity + 1 (see quantityRaw), null without ItemQuantity. */
   quantity: Value;
+  /** ItemQuantity as stored: pieces - 1. Single items and blueprints 0, a full stack of 100 is 99. */
+  quantityRaw: Value;
   quality: Value;
   rating: Value;
   durability: Value;
@@ -80,6 +83,8 @@ export interface ClusterItem {
   stats: Value[];
   colors: Value[];
   isBlueprint: Value;
+  /** bAllowRemovalFromInventory. ARK did not let players download add-item items without it. */
+  allowRemoval: Value;
   customName: Value;
   customDescription: Value;
   crafterName: Value;
@@ -148,13 +153,15 @@ function itemView(entry: Property[], index: number, ctx: ReadContext): ClusterIt
     index,
     blueprint: pathOf(info.ItemArchetype),
     itemId: [Number(id.ItemID1), Number(id.ItemID2)],
-    quantity: info.ItemQuantity ?? null,
+    quantity: typeof info.ItemQuantity === 'number' ? info.ItemQuantity + 1 : null,
+    quantityRaw: info.ItemQuantity ?? null,
     quality: info.ItemQualityIndex ?? null,
     rating: info.ItemRating ?? null,
     durability: info.ItemDurability ?? null,
     stats: staticArray(info, 'ItemStatValues', 8),
     colors: staticArray(info, 'ItemColorID', 6),
     isBlueprint: info.bIsBlueprint ?? null,
+    allowRemoval: info.bAllowRemovalFromInventory ?? null,
     customName: info.CustomItemName ?? null,
     customDescription: info.CustomItemDescription ?? null,
     crafterName: info.CrafterCharacterName ?? null,
@@ -219,7 +226,11 @@ export function readCluster(buf: Buffer, ctx = new ReadContext()): Cluster {
 export interface NewItem {
   /** Item class: "/Game/.../PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt_C", a Blueprint'...' path or the full ItemArchetype. */
   blueprint: string;
-  /** ItemQuantity (UInt32). Default 1. Uploaded blueprints in the files seen store 0. */
+  /**
+   * Number of pieces, 1 or more. Default 1. Written as ItemQuantity = pieces - 1: in real files full
+   * stacks of 100 store 99, of 50 store 49, single items and blueprints 0; ItemQuantity 100 gave
+   * 101 pieces in the game.
+   */
   quantity?: number;
   /** ItemQualityIndex 0..5 (primitive ... ascendant). Default 0. */
   quality?: number;
@@ -233,6 +244,12 @@ export interface NewItem {
   colors?: number[];
   /** Upload the item as a blueprint. */
   isBlueprint?: boolean;
+  /**
+   * bAllowRemovalFromInventory. Default true: in the game test ARK refused to download add-item
+   * items with false (same file, true downloaded fine). Real uploads have it mixed, blueprints
+   * mostly false; whether blueprints need it is not tested yet.
+   */
+  allowRemoval?: boolean;
   customName?: string | null;
   customDescription?: string | null;
   crafterName?: string | null;
@@ -255,6 +272,11 @@ export interface AddedItem {
   index: number;
   itemId: [number, number];
   blueprint: string;
+  /** Pieces, and ItemQuantity as written (pieces - 1). */
+  quantity: number;
+  quantityRaw: number;
+  /** bAllowRemovalFromInventory as written. */
+  allowRemoval: boolean;
   uploadTime: number;
   expiration: number;
   owner: string;
@@ -306,7 +328,8 @@ export function itemIds(c: TreeContainer | null): Set<string> {
   return out;
 }
 
-function defaultOwner(c: TreeContainer | null): bigint {
+/** PlayerDataID of the uploaded character, else the most common owner of the items, else 0. */
+export function defaultOwner(c: TreeContainer | null): bigint {
   const player = clusterEntries(c, 'ArkPlayerData')[0];
   const id = player ? findProperty(player, 'PlayerDataID')?.value : undefined;
   if (typeof id === 'bigint') return id;
@@ -333,17 +356,17 @@ const pad = (values: number[] | undefined, n: number): number[] => Array.from({ 
 
 /**
  * One ArkItems entry: ItemNetInfo with the 95 fields in the order the game (2023+) writes them,
- * then Version 2.0 and UploadTime.
+ * then Version 2.0 and UploadTime. quantityRaw is ItemQuantity as stored (pieces - 1).
  */
 export function tributeItemEntry(f: {
-  archetype: string; itemId: [number, number]; quantity: number; quality: number; rating: number; durability: number;
-  stats: number[]; colors: number[]; isBlueprint: boolean; customName: string | null; customDescription: string | null;
+  archetype: string; itemId: [number, number]; quantityRaw: number; quality: number; rating: number; durability: number;
+  stats: number[]; colors: number[]; isBlueprint: boolean; allowRemoval: boolean; customName: string | null; customDescription: string | null;
   crafterName: string | null; crafterTribe: string | null; ammo: number; owner: bigint; uploadTime: number; expiration: number;
 }): Property[] {
   const info: Property[] = [
     p('ItemArchetype', 'ObjectProperty', { path: f.archetype }),
     p('ItemId', 'StructProperty', [p('ItemID1', 'UInt32Property', f.itemId[0]), p('ItemID2', 'UInt32Property', f.itemId[1])], { inner: 'ItemNetID' }),
-    p('ItemQuantity', 'UInt32Property', f.quantity),
+    p('ItemQuantity', 'UInt32Property', f.quantityRaw),
     p('CustomItemID', 'IntProperty', 0),
     p('SlotIndex', 'IntProperty', 0),
     p('CreationTime', 'DoubleProperty', 0),
@@ -355,7 +378,9 @@ export function tributeItemEntry(f: {
       'bIsBlueprint', 'bIsEngram', 'bIsCustomRecipe', 'bIsFoodRecipe', 'bIsRepairing', 'bAllowRemovalFromInventory',
       'bHideFromInventoryDisplay', 'bAllowRemovalFromSteamInventory', 'bFromSteamInventory', 'bIsFromAllClustersInventory',
       'bForcePreventGrinding', 'bIsEquipped', 'bIsSlot', 'bIsInitialItem',
-    ], new Set(f.isBlueprint ? ['bIsBlueprint', 'bAllowRemovalFromSteamInventory'] : ['bAllowRemovalFromSteamInventory'])),
+    ], new Set([
+      'bAllowRemovalFromSteamInventory', ...(f.isBlueprint ? ['bIsBlueprint'] : []), ...(f.allowRemoval ? ['bAllowRemovalFromInventory'] : []),
+    ])),
     p('CraftQueue', 'UInt16Property', 0),
     p('NextCraftCompletionTime', 'DoubleProperty', 0),
     p('CraftingSkill', 'FloatProperty', 0),
@@ -439,13 +464,15 @@ export function addItem(
       if (++tries > 100) throw new Error('no free item id found');
     } while (taken.has(`${itemId[0]}:${itemId[1]}`));
   }
+  const quantity = checkInt(item.quantity ?? 1, 1, 2 ** 32, 'quantity');
+  const allowRemoval = item.allowRemoval ?? true;
   const entry = tributeItemEntry({
     archetype, itemId, uploadTime, expiration, owner,
-    quantity: checkInt(item.quantity ?? 1, 0, 2 ** 32 - 1, 'quantity'),
+    quantityRaw: quantity - 1,
     quality: checkInt(item.quality ?? 0, 0, 255, 'quality'),
     rating: checkFloat(item.rating ?? 0, 'rating'),
     durability: checkFloat(item.durability ?? 0, 'durability'),
-    stats, colors, isBlueprint: item.isBlueprint ?? false,
+    stats, colors, isBlueprint: item.isBlueprint ?? false, allowRemoval,
     customName: item.customName ?? null, customDescription: item.customDescription ?? null,
     crafterName: item.crafterName ?? null, crafterTribe: item.crafterTribe ?? null,
     ammo: checkInt(item.ammo ?? 0, 0, 2 ** 32 - 1, 'ammo'),
@@ -460,6 +487,9 @@ export function addItem(
   list.push(entry);
   return {
     tree,
-    added: { index: list.length - 1, itemId, blueprint: archetype, uploadTime, expiration, owner: owner.toString() },
+    added: {
+      index: list.length - 1, itemId, blueprint: archetype, quantity, quantityRaw: quantity - 1, allowRemoval, uploadTime,
+      expiration, owner: owner.toString(),
+    },
   };
 }
