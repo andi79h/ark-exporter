@@ -10,7 +10,9 @@ import { classPathsInNames, InstallDir } from '../src/class-paths.ts';
 import { clusterEntries, readCluster, readClusterTree, writeClusterTree } from '../src/cluster.ts';
 import {
   addDino, copyItem, creatureBlueprint, creatureId, creaturesInCluster, creaturesInSave, dinoStatTexts, readCreatureArchive,
+  recolorDino,
 } from '../src/cluster-dinos.ts';
+import { colorName, storedColorSetName } from '../src/colors.ts';
 import { MaxStatusEstimator } from '../src/creature-stats.ts';
 import { findProperty, type Property, readContainerTree, sameValue, writeContainerTree } from '../src/tree.ts';
 import {
@@ -36,7 +38,10 @@ const paths = (name: string, list: string[]): Prop => ({
 });
 
 /** A creature archive like DinoData: creature, status component, inventory component. */
-function creature(cls: string, id: [number, number], o: { name?: string; team?: number; outer?: string[]; status?: Prop[] } = {}): Buffer {
+function creature(
+  cls: string, id: [number, number],
+  o: { name?: string; team?: number; outer?: string[]; status?: Prop[]; colorProps?: Prop[] } = {},
+): Buffer {
   const actor = `${cls}_7`;
   const outer = o.outer ?? ['PersistentLevel', 'TheIsland'];
   return buildEmbedded([
@@ -44,7 +49,7 @@ function creature(cls: string, id: [number, number], o: { name?: string; team?: 
       cls, names: [actor, ...outer], loc: [1, 2, 3],
       props: [
         ...(o.name ? [str('TamedName', o.name)] : []),
-        str('TamerString', 'Stamm'), byte('ColorSetIndices', 36), u32('DinoID1', id[0]), u32('DinoID2', id[1]),
+        str('TamerString', 'Stamm'), byte('ColorSetIndices', 36), ...(o.colorProps ?? []), u32('DinoID1', id[0]), u32('DinoID2', id[1]),
         ref('MyCharacterStatusComponent', 1), ref('MyInventoryComponent', 2), int('TargetingTeam', o.team ?? 1_500_000_000),
       ],
       extra: Buffer.from('0000000001000000', 'hex'),
@@ -711,6 +716,128 @@ test('cluster CLI: dinos, add-dino --out / --in-place, copy-item', () => {
     const v = readCluster(readFileSync(target));
     assert.equal(v.items.length, 1);
     assert.equal(v.dinos.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- recolor
+
+const nameProp = (n: string, v: string, index = 0): Prop => ({ name: n, type: 'NameProperty', index, value: (w) => w.string(v) });
+
+/** One uploaded raptor with colours 36 / - / 14 and six ColorSetNames, as tamed creatures have them. */
+function colorfulFile(): Buffer {
+  const data = creature('Raptor_Character_BP_C', RAPTOR_ID, {
+    name: 'Clever',
+    colorProps: [byte('ColorSetIndices', 14, 2), ...Array.from({ length: 6 }, (_, i) => nameProp('ColorSetNames', `Old${i}`, i))],
+  });
+  return buildContainer([{
+    cls: 'ArkCloudInventoryData', names: ['ArkCloudInventoryData_7'], isItem: true,
+    props: [struct('MyArkData', 'ArkInventoryData', [structArray('ArkTamedDinosData', [upload(data, RAPTOR_ID)])])], extra: Buffer.alloc(4),
+  }], 4);
+}
+
+const colorProps = (data: Buffer): [string, number, unknown][] =>
+  readCreatureArchive(data)!.creature.props.filter((p) => p.name.startsWith('ColorSet')).map((p) => [p.name, p.index, p.value]);
+
+test('colour table: names, dyes and the names the game stores', () => {
+  assert.equal(colorName(1), 'Red');
+  assert.equal(colorName(14), 'Black');
+  assert.equal(colorName(100), 'Cream');
+  assert.equal(colorName(201), 'Black Coloring');
+  assert.equal(colorName(226), 'Slate Coloring');
+  for (const id of [0, 101, 200, 227, 255]) assert.equal(colorName(id), null, String(id));
+  // Seen in a real save: ID 13 (Dark Grey) carries "Black", 99 "Cream", 100 "Unused", dyes "DyeIndex".
+  assert.equal(storedColorSetName(13), 'Black');
+  assert.equal(storedColorSetName(99), 'Cream');
+  assert.equal(storedColorSetName(100), 'Unused');
+  assert.equal(storedColorSetName(206), 'DyeIndex');
+});
+
+test('recolor: sets, inserts in order, clears, rewrites names, keeps everything else', () => {
+  const buf = colorfulFile();
+  const tree = readClusterTree(buf)!;
+  const oldEntry = clusterEntries(readClusterTree(buf), 'ArkTamedDinosData')[0];
+  const oldData = findProperty(oldEntry, 'DinoData')!.value as Buffer;
+  assert.deepEqual(creaturesInCluster(tree)[0].info.colors, [36, 0, 14, 0, 0, 0]);
+
+  const { recolored } = recolorDino(tree, { dinoId: RAPTOR_ID }, { colors: { 0: 13, 1: 27, 2: 0, 4: 201 } });
+  assert.deepEqual(recolored.before, [36, 0, 14, 0, 0, 0]);
+  assert.deepEqual(recolored.after, [13, 27, 0, 0, 201, 0]);
+  assert.deepEqual(recolored.names, [0, 1, 4]);
+  assert.deepEqual(recolored.dinoId, RAPTOR_ID);
+
+  const out = writeClusterTree(tree);
+  assert.ok(writeClusterTree(readClusterTree(out)).equals(out), 'round trip');
+  const [src] = creaturesInCluster(readClusterTree(out));
+  assert.deepEqual(src.info.colors, [13, 27, 0, 0, 201, 0]);
+  assert.deepEqual(src.info.dinoId, RAPTOR_ID);
+  const newEntry = clusterEntries(readClusterTree(out), 'ArkTamedDinosData')[0];
+  const newData = findProperty(newEntry, 'DinoData')!.value as Buffer;
+  // Regions stay in order, region 2 is gone (the game leaves unused regions out), names follow the game.
+  assert.deepEqual(colorProps(newData), [
+    ['ColorSetIndices', 0, 13], ['ColorSetIndices', 1, 27], ['ColorSetIndices', 4, 201],
+    ['ColorSetNames', 0, 'Black'], ['ColorSetNames', 1, 'Dino Light Blue'], ['ColorSetNames', 2, 'Old2'],
+    ['ColorSetNames', 3, 'Old3'], ['ColorSetNames', 4, 'DyeIndex'], ['ColorSetNames', 5, 'Old5'],
+  ]);
+  sameExcept(oldData, newData, ['ColorSetIndices', 'ColorSetNames']);
+  const rest = (e: Property[]) => e.filter((p) => p.name !== 'DinoData');
+  assert.ok(sameValue(rest(oldEntry) as never, rest(newEntry) as never), 'upload entry unchanged apart from DinoData');
+});
+
+test('recolor: by index, names kept, refusals', () => {
+  const tree = () => readClusterTree(colorfulFile())!;
+  const t = tree();
+  const { recolored } = recolorDino(t, { index: 0 }, { colors: { 3: 55 }, names: 'keep' });
+  assert.deepEqual(recolored.after, [36, 0, 14, 55, 0, 0]);
+  assert.deepEqual(recolored.names, []);
+  const data = findProperty(clusterEntries(t, 'ArkTamedDinosData')[0], 'DinoData')!.value as Buffer;
+  assert.deepEqual(colorProps(data).filter(([n]) => n === 'ColorSetNames').map(([, , v]) => v), ['Old0', 'Old1', 'Old2', 'Old3', 'Old4', 'Old5']);
+
+  assert.throws(() => recolorDino(tree(), { index: 0 }, { colors: { 0: 150 } }), /no ASE colour/);
+  assert.deepEqual(recolorDino(tree(), { index: 0 }, { colors: { 0: 150 }, anyColor: true }).recolored.after[0], 150);
+  assert.throws(() => recolorDino(tree(), { index: 0 }, { colors: { 6: 1 } }), /region must be/);
+  assert.throws(() => recolorDino(tree(), { index: 0 }, { colors: { 0: 256 }, anyColor: true }), /0\.\.255/);
+  assert.throws(() => recolorDino(tree(), { index: 0 }, { colors: {} }), /no colours/);
+  assert.throws(() => recolorDino(tree(), { index: 1 }, { colors: { 0: 1 } }), /no uploaded creature at index 1/);
+  assert.throws(() => recolorDino(tree(), { dinoId: [1, 2] }, { colors: { 0: 1 } }), /0 uploaded creatures/);
+});
+
+test('cluster CLI: recolor --out / --in-place, colours in show and dinos', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ark-recolor-'));
+  try {
+    const file = join(dir, PLAYER);
+    writeFileSync(file, colorfulFile());
+    const run = (...args: string[]) => spawnSync(process.execPath, [CLI, 'cluster', ...args], { encoding: 'utf8' });
+
+    const shown = run('show', file);
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.deepEqual(JSON.parse(shown.stdout).dinos[0].colors, [36, 0, 14, 0, 0, 0]);
+
+    const out = join(dir, 'out');
+    const r1 = run('recolor', file, '--dino', RAPTOR_ID.join(':'), '--colors', '0=14,5=206', '--out', out);
+    assert.equal(r1.status, 0, r1.stderr);
+    const res = JSON.parse(r1.stdout);
+    assert.deepEqual(res.colors.after.map((c: { id: number }) => c.id), [14, 0, 14, 0, 0, 206]);
+    assert.equal(res.colors.after[5].name, 'Green Coloring');
+    assert.equal(res.backup, null);
+    assert.ok(readFileSync(file).equals(colorfulFile()), '--out leaves the input alone');
+    const listed = run('dinos', out);
+    assert.deepEqual(JSON.parse(listed.stdout).creatures[0].colors, [14, 0, 14, 0, 0, 206]);
+
+    for (const bad of [['--colors', '0=999'], ['--colors', '7=1'], ['--colors', '0=1,0=2'], ['--colors', 'rot'], []]) {
+      const r = run('recolor', file, '--index', '0', ...bad, '--out', join(dir, 'x'));
+      assert.notEqual(r.status, 0, bad.join(' '));
+    }
+    assert.ok(!existsSync(join(dir, 'x')));
+    assert.notEqual(run('recolor', file, '--index', '0', '--colors', '0=1', '--in-place').status, 0, '--in-place needs --backup');
+
+    const r2 = run('recolor', file, '--index', '0', '--colors', '1=55', '--in-place', '--backup', join(dir, 'bak'));
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(creaturesInCluster(readClusterTree(readFileSync(file)))[0].info.colors, [36, 55, 14, 0, 0, 0]);
+    const backups = readdirSync(join(dir, 'bak'));
+    assert.equal(backups.length, 1);
+    assert.ok(readFileSync(join(dir, 'bak', backups[0])).equals(colorfulFile()), 'backup holds the original');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -218,7 +218,7 @@ ark-export sync --out DIR [--exclude A,B] <SavedArks-Ordner | Map.ark>...
 ark-export mysql --out DIR [--name N] --mysql URL   neuesten Stand und Verlauf nach MySQL übertragen
 ark-export query <datei.sqlite> <SQL> [Parameter]   Zeilen als JSON Lines
 ark-export compare <alt.sqlite> <neu.sqlite>        welche Felder sich ändern
-ark-export cluster show|check|add-item|dinos|add-dino|copy-item ...
+ark-export cluster show|check|add-item|dinos|add-dino|copy-item|recolor ...
                                                     Cluster-Dateien, siehe unten
 ark-export edit verify|check|list|delete|decay|clear-inventory|move|copy|pattern-save|pattern-show|pattern-place ...
                                                     Spielstände ändern, siehe unten
@@ -409,6 +409,30 @@ bin/ark-export edit pattern-place TheIsland.ark --pattern haus.json --at -50000,
 
 Ob das Spiel einen so geänderten Save lädt, beweist nur ein Server. Der Ablauf dafür: Save laden, `saveworld`, den neuen Save wieder lesen. Erst danach gehört eine Änderung auf eine Live-Karte, und dort nur bei gestoppter Karte und mit frischer Sicherung.
 
+### Tiere umfärben
+
+```
+ark-export cluster recolor <datei> (--dino A:B | --index N) --colors R=ID,... (--out DATEI | --in-place --backup ORDNER) [--names game|keep] [--any-color]
+```
+
+Setzt die Farben eines hochgeladenen Tiers. Der Spieler lädt das Tier am Obelisken hoch, `recolor` ändert die Farben in seiner Cluster-Datei, und beim Herunterladen baut das Spiel das Tier aus `DinoData` mit den neuen Farben. Bot und Client braucht es dafür nicht.
+
+- **Auswahl:** `--dino DinoID1:DinoID2` oder `--index N`, die Position in `ArkTamedDinosData`. Beides zeigen `cluster dinos` und `cluster show`, dort jetzt mit den sechs Farben.
+- **Farben:** `--colors 0=14,4=27` setzt Region 0 auf 14 (Black) und Region 4 auf 27 (Dino Dark Green). Nicht genannte Regionen bleiben, wie sie sind.
+- **Gültige IDs** stehen in `src/colors.ts`: 1–100 sind Tierfarben, 201–226 Färbemittel, 0 heißt „Region unbenutzt“. Andere Werte nimmt `recolor` nur mit `--any-color` an.
+- **Was sich ändert:**
+  - Im Tier-Objekt des Archivs ändern sich nur die `ColorSetIndices[0..5]` (ByteProperty).
+  - Eine Region, die bisher fehlte, wird in der Reihenfolge des Spiels eingefügt. Eine Region mit 0 fällt weg, so wie das Spiel unbenutzte Regionen nicht speichert.
+  - Zahme Tiere haben oft zusätzlich `ColorSetNames[0..5]`. Die schreibt `recolor` so, wie das Spiel sie schreibt, siehe unten. Mit `--names keep` bleiben sie unverändert.
+  - DinoIDs, Upload-Zeit, Werte, Mutationen, Abstammung und der Upload-Eintrag bleiben Byte für Byte erhalten.
+- **Farbnamen im Save:** Das Spiel speichert in `ColorSetNames` den Namen der *nächsten* Farbe. Bei ID 13 (Dark Grey) steht dort also „Black“, bei Färbemitteln „DyeIndex“ und bei ID 100 „Unused“. Das zeigt der Island-Spielstand eines Community-Servers mit 3.271 zahmen Tieren. Wilde Raptoren tragen in Region 0 genau die IDs ihrer natürlichen Farben laut `values.json`. Die IDs folgen also der Tabelle, und nur die Namen sind verschoben. Ob das Spiel die Namen überhaupt liest, ist offen.
+- **Prüfungen:** wie bei `add-dino`.
+  - Ein Archiv, das sich nicht byte-genau zurückschreiben lässt, wird nicht geändert.
+  - Danach muss das Tier mit derselben DinoID und genau den neuen Farben zurückgelesen werden.
+  - `--in-place` sichert zuerst. Hat der Spielserver die Datei inzwischen geschrieben, ersetzt der Befehl sie nicht.
+- **Erprobt** an Kopien echter Dateien: alle 55 hochgeladenen Tiere aus 45 Cluster-Dateien. Dabei wurden 33-mal eine leere Region eingefügt, 55-mal eine Region geleert und 132 Namen umgeschrieben. Sonst ändert sich nichts, auch nicht an den anderen Uploads derselben Datei. 29 der 55 Tiere hatten `ColorSetNames`.
+- **Noch nicht:** Tiere in hochgeladenen Kryokapseln und Seelen. Deren Archiv ist gleich aufgebaut, steckt aber in den Item-Daten.
+
 ## Laufzeit und Speicher
 
 Gemessen auf einem Mac (M5 Max) mit dem Gen2-Save, je Save:
@@ -486,6 +510,7 @@ Aufbau:
   - Bietet der Server ein mit `add-dino` eingesetztes Tier zum Herunterladen an? Wem gehört es danach: dem Abholer, wie `SpawnFromDinoDataEx(…, ForTeam, …)` vermuten lässt, oder weiter dem alten Stamm aus `TargetingTeam`?
   - Lässt sich eine mit `copy-item` kopierte Seele vom neuen Besitzer freilassen, obwohl darin noch die Stamm-ID des alten Besitzers steht?
   - Nimmt der Server ein Tier aus der Welt (`kind: world`) so an? Braucht er die äußeren Namen mit Kartenpaket, und fehlt ihm etwas von dem, was beim Angleichen wegfällt?
+  - Kommt ein mit `recolor` umgefärbtes Tier mit den neuen Farben aus dem Obelisken, und erben seine Jungen sie? Liest das Spiel `ColorSetNames`, oder genügen die IDs?
 
 - Spielstände ändern, im Spiel zu klären:
   - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?
