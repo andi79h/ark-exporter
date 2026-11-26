@@ -31,8 +31,11 @@ export interface RemovalTarget {
 export interface RefundEntry {
   team: number | null;
   tribeName: string | null;
-  /** class: the object is of a removed class; content: it was inside or on something removed. */
-  reason: 'class' | 'content';
+  /**
+   * class: the object is of a removed class; content: it was inside or on something removed or lost;
+   * lost: the game dropped it on load although its class was not removed (diff-classes).
+   */
+  reason: 'class' | 'content' | 'lost';
   kind: string;
   cls: string;
   blueprint: boolean;
@@ -124,12 +127,13 @@ type Mark = [number, number, number, number, number];
 const mark = (c: Ctx): Mark => [c.refunds.length, c.archivesChanged, c.objectsRemoved, c.notRewritable, c.unremovable];
 const reset = (c: Ctx, m: Mark): void => { [c.refunds.length, c.archivesChanged, c.objectsRemoved, c.notRewritable, c.unremovable] = m; };
 
-function quantityOf(props: Property[]): number {
+export function quantityOf(props: Property[]): number {
   const q = numberProp(props, 'ItemQuantity');
   return q !== null && q > 0 ? q : 1;
 }
 
-function itemKey(props: Property[]): string | null {
+/** ItemID1:ItemID2 of an item, null without ItemId. */
+export function itemKey(props: Property[]): string | null {
   const id = prop(props, 'ItemId');
   if (!Array.isArray(id)) return null;
   return `${String(prop(id as Property[], 'ItemID1'))}:${String(prop(id as Property[], 'ItemID2'))}`;
@@ -185,6 +189,18 @@ function refundBlob(ctx: Ctx, bytes: Buffer, owner: TeamInfo, holder: string, at
   } else {
     refundBlobs(ctx, d.list, owner, holder, at);
   }
+}
+
+const newCtx = (isClass: Ctx['isClass'], isPath: Ctx['isPath']): Ctx => ({
+  isClass, isPath, refunds: [], silent: false, archivesChanged: 0, objectsRemoved: 0, notRewritable: 0, unremovable: 0,
+  entriesDropped: new Map(), componentsKept: new Map(), pathRefs: new Map(), topName: '',
+});
+
+/** Refund entries (reason content) for what sits in the embedded archives of a property list: cryopods, soul traps. */
+export function embeddedRefunds(list: Property[], owner: TeamInfo, holder: string, at: Transform | null): RefundEntry[] {
+  const ctx = newCtx(() => false, () => false);
+  refundBlobs(ctx, list, owner, holder, at);
+  return ctx.refunds;
 }
 
 /** Team of the first creature in the embedded archives of a property list. */
@@ -434,10 +450,7 @@ export function removeClasses(ed: SaveEditor, target: RemovalTarget): { report: 
   if (target.assetList !== undefined) ev.loadAssetList(target.assetList);
   const { decisions, isClass, isPath } = decideClasses(ed, target, ev);
   const owners = new OwnerIndex(ed);
-  const ctx: Ctx = {
-    isClass, isPath, refunds: [], silent: false, archivesChanged: 0, objectsRemoved: 0, notRewritable: 0, unremovable: 0,
-    entriesDropped: new Map(), componentsKept: new Map(), pathRefs: new Map(), topName: '',
-  };
+  const ctx = newCtx(isClass, isPath);
 
   // 1. World objects of the classes.
   const roots = new Set<number>();

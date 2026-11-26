@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ClassEvidence, ClassRemapper, classOfPath, inOrigin, OwnerIndex, parseMapping } from '../src/classes.ts';
+import { diffSaves, indexSave, lostKeys } from '../src/diff.ts';
 import { SaveEditor } from '../src/editor.ts';
 import { decodeBlob } from '../src/embedded.ts';
 import { aggregateRefunds, refundCsv, removeClasses } from '../src/removal.ts';
@@ -552,6 +553,141 @@ test('CLI: remap-classes and remove-classes, dry run writes nothing, profiles in
     r = run('asset-list', mods);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.stdout, '/Game/Mods/ModPack/Box/BP_ModBox\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- diff
+
+const WILD = 3;
+const dinoExtra = (): Buffer => new Writer(null).i32(0).i32(1).toBuffer();
+function dino(cls: string, name: string, ids: [number, number], team: number, loc: [number, number, number]): Obj {
+  return { cls, names: [name], loc, props: [int('DinoID1', ids[0]), int('DinoID2', ids[1]), int('TargetingTeam', team), str('TribeName', 'Tribe of Test')], extra: dinoExtra() };
+}
+const vivarium = (items: number[]): Obj[] => [
+  structure('BP_Vivarium_C', 'BP_Vivarium_C_1', [100, 0, 0], TRIBE, [ref('MyInventoryComponent', 1)]),
+  { cls: 'PrimalInventory_Vivarium_C', names: ['PrimalInventory_Vivarium_C_1', 'BP_Vivarium_C_1'], props: [refs('InventoryItems', items)], extra: Buffer.alloc(4) },
+];
+
+/**
+ * What was put in place: 0 vivarium with 1 inventory holding 2 eggs, 3 stone, 4 a recipe, 13 a
+ * cryopod and 16 meat; 5 a tek storage of another tribe with 6 inventory and 7 metal; 8 a tamed
+ * rex, 9 a tamed bionic giga, 10 a wild dodo; 11/12 a wall written twice; 14 an S+ box; 15 buff data.
+ * withMeat false: the same without the meat (what a baseline run leaves).
+ */
+function diffBefore(withMeat = true): Buffer {
+  const objs: Obj[] = [
+    ...vivarium(withMeat ? [2, 3, 4, 13, 16] : [2, 3, 4, 13]),
+    item('PrimalItemConsumable_Egg_Gigant_Bionic_C', 'PrimalItemConsumable_Egg_Gigant_Bionic_C_1', 11, 1, [int('ItemQuantity', 100)]),
+    item('PrimalItemResource_Stone_C', 'PrimalItemResource_Stone_C_1', 13, 1, [int('ItemQuantity', 50)]),
+    item('PrimalItemStructure_Wall_Wood_C', 'PrimalItemStructure_Wall_Wood_C_1', 15, 1, [bool('bIsEngram', true)]),
+    structure('BP_TekStorage_C', 'BP_TekStorage_C_1', [900, 900, 0], OTHER, [ref('MyInventoryComponent', 6)]),
+    { cls: 'PrimalInventory_TekStorage_C', names: ['PrimalInventory_TekStorage_C_1', 'BP_TekStorage_C_1'], props: [refs('InventoryItems', [7])], extra: Buffer.alloc(4) },
+    item('PrimalItemResource_MetalIngot_C', 'PrimalItemResource_MetalIngot_C_1', 17, 6, [int('ItemQuantity', 50)]),
+    dino('Rex_Character_BP_C', 'Rex_Character_BP_C_1', [1, 2], TRIBE, [200, 0, 0]),
+    dino('BionicGigant_Character_BP_C', 'BionicGigant_Character_BP_C_1', [3, 4], TRIBE, [300, 0, 0]),
+    dino('Dodo_Character_BP_C', 'Dodo_Character_BP_C_1', [5, 6], WILD, [400, 0, 0]),
+    structure('Wall_Wood_C', 'Wall_Wood_C_1', [500, 0, 0], TRIBE),
+    structure('Wall_Wood_C', 'Wall_Wood_C_1', [500, 0, 0], TRIBE),
+    cryopod('PrimalItem_WeaponEmptyCryopod_C_1', 19, 1, creature('Raptor_Character_BP_C', 'Raptor_Character_BP_C_3', TRIBE), P.vRaptor),
+    structure('StorageBox_Huge_C', 'StorageBox_Huge_C_1', [600, 0, 0], TRIBE),
+    { cls: 'PrimalBuffPersistentData', names: ['PrimalBuffPersistentData_0'], isItem: true, props: [path('ForPrimalBuffClass', BGC(`${MOD}/Buffs/ModBuff.ModBuff_C`))], extra: Buffer.alloc(4) },
+  ];
+  if (withMeat) objs.push(item('PrimalItemConsumable_RawMeat_C', 'PrimalItemConsumable_RawMeat_C_1', 21, 1));
+  return buildSave(objs, { map: 'TestMap' });
+}
+
+/**
+ * What the game wrote after loading it: eggs, the tek storage, the giga, the dodo, the cryopod, the
+ * buff data and the meat are gone; the recipe got a new id, the rex a new name, the wall is written
+ * once, the S+ box carries another class; a wild dilo spawned.
+ */
+function diffAfter(): Buffer {
+  return buildSave([
+    ...vivarium([2, 3]),
+    item('PrimalItemResource_Stone_C', 'PrimalItemResource_Stone_C_1', 13, 1, [int('ItemQuantity', 50)]),
+    item('PrimalItemStructure_Wall_Wood_C', 'PrimalItemStructure_Wall_Wood_C_9', 99, 1, [bool('bIsEngram', true)]),
+    dino('Rex_Character_BP_C', 'Rex_Character_BP_C_7', [1, 2], TRIBE, [200, 0, 0]),
+    structure('Wall_Wood_C', 'Wall_Wood_C_1', [500, 0, 0], TRIBE),
+    structure('StorageBox_Large_C', 'StorageBox_Huge_C_1', [600, 0, 0], TRIBE),
+    dino('Dilo_Character_BP_C', 'Dilo_Character_BP_C_1', [7, 8], WILD, [700, 0, 0]),
+  ], { map: 'TestMap' });
+}
+
+test('diff-classes: matches by stable ids, extra loss as refund entries, baseline takes out what the game drops itself', () => {
+  const after = indexSave(SaveEditor.open(diffAfter()));
+  assert.deepEqual([after.objects, after.recipes, after.keys.size], [8, 1, 7]);
+
+  let { report: r, refunds } = diffSaves(SaveEditor.open(diffBefore()), after);
+  assert.equal(r.baseline, false);
+  assert.deepEqual(r.objects, { before: 17, after: 8 });
+  assert.deepEqual(r.recipesLeftOut, { before: 1, after: 1 });
+  // The doubled wall counts once, the recipe not at all.
+  assert.deepEqual(r.compared, { before: 15, after: 7, matched: 6 });
+  assert.deepEqual([r.lost, r.baselineLost, r.extra, r.gained], [9, 0, 9, 1]);
+  assert.deepEqual(r.classChanged, { 'StorageBox_Huge_C -> StorageBox_Large_C': 1 });
+  assert.deepEqual(r.notRefunded, { components: 1, buffData: 1, wildCreatures: 1, actors: 0 });
+  const egg = r.classes.find((c) => c.cls === 'PrimalItemConsumable_Egg_Gigant_Bionic_C')!;
+  assert.deepEqual(egg, { cls: egg.cls, before: 1, after: 0, lost: 1, baselineLost: 0, extra: 1, gained: 0 });
+  assert.deepEqual(r.classes.find((c) => c.cls === 'Dilo_Character_BP_C'), { cls: 'Dilo_Character_BP_C', before: 0, after: 1, lost: 0, baselineLost: 0, extra: 0, gained: 1 });
+  assert.equal(r.classes.some((c) => c.cls === 'Rex_Character_BP_C' || c.cls === 'Wall_Wood_C'), false);
+
+  const line = (e: (typeof refunds)[number]): string => `${e.team}|${e.reason}|${e.kind}|${e.cls}|${e.quantity}|${e.holder}`;
+  assert.deepEqual(refunds.map(line), [
+    `${TRIBE}|lost|item|PrimalItemConsumable_Egg_Gigant_Bionic_C|100|BP_Vivarium_C`,
+    `${OTHER}|lost|structure|BP_TekStorage_C|1|`,
+    `${OTHER}|content|item|PrimalItemResource_MetalIngot_C|50|BP_TekStorage_C`,
+    `${TRIBE}|lost|dino|BionicGigant_Character_BP_C|1|`,
+    `${TRIBE}|lost|item|PrimalItem_WeaponEmptyCryopod_C|1|BP_Vivarium_C`,
+    `${TRIBE}|content|dino|Raptor_Character_BP_C|1|PrimalItem_WeaponEmptyCryopod_C in BP_Vivarium_C`,
+    `${TRIBE}|lost|item|PrimalItemConsumable_RawMeat_C|1|BP_Vivarium_C`,
+  ]);
+  assert.deepEqual(refunds[0].at, { x: 100, y: 0, z: 0 });
+
+  // Baseline: the meat spoiled in the run with the unedited save as well.
+  const baseLost = lostKeys(indexSave(SaveEditor.open(diffBefore())), indexSave(SaveEditor.open(diffBefore(false))));
+  assert.deepEqual([...baseLost], ['item:21:22']);
+  ({ report: r, refunds } = diffSaves(SaveEditor.open(diffBefore()), after, baseLost));
+  assert.deepEqual([r.baseline, r.lost, r.baselineLost, r.extra], [true, 9, 1, 8]);
+  assert.deepEqual(r.classes.find((c) => c.cls === 'PrimalItemConsumable_RawMeat_C')!.extra, 0);
+  assert.equal(refunds.some((e) => e.cls === 'PrimalItemConsumable_RawMeat_C'), false);
+  assert.equal(refunds.length, 6);
+});
+
+test('CLI: diff-classes with baseline pair and refund list', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ark-diff-'));
+  try {
+    const f = (name: string, data: Buffer): string => { const p = join(dir, name); writeFileSync(p, data); return p; };
+    const before = f('TestMap.ark', diffBefore());
+    const after = f('resaved.ark', diffAfter());
+    const base = f('orig.ark', diffBefore());
+    const baseAfter = f('orig-resaved.ark', diffBefore(false));
+    const run = (...args: string[]) => spawnSync(process.execPath, [CLI, 'edit', 'diff-classes', ...args], { encoding: 'utf8' });
+
+    let r = run(before, after, '--baseline', base, '--baseline-after', baseAfter, '--refund', join(dir, 'refund.csv'), '--report', join(dir, 'report.json'));
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual([out.operation, out.baseline, out.extra, out.baselineLost], ['diff-classes', true, 8, 1]);
+    assert.deepEqual(out.baselineFiles, ['orig.ark', 'orig-resaved.ark']);
+    assert.deepEqual(out.refund, { rows: 6, tribes: 2, entries: 6 });
+    assert.equal(out.warnings, undefined);
+    assert.deepEqual(out.extraByClass.PrimalItemConsumable_Egg_Gigant_Bionic_C, { objects: 1, quantity: 100 });
+    const csv = readFileSync(join(dir, 'refund.csv'), 'utf8').trim().split('\n');
+    assert.equal(csv.length, 7);
+    assert.equal(csv[1], `TestMap,${TRIBE},Tribe of Test,content,dino,Raptor_Character_BP_C,0,1,1,PrimalItem_WeaponEmptyCryopod_C in BP_Vivarium_C,100,0,0`);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'report.json'), 'utf8')).classes.length, out.classes.length);
+    assert.ok(readFileSync(before).equals(diffBefore())); // reads only
+
+    r = run(before, after);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).extra, 9);
+    assert.match(JSON.parse(r.stdout).warnings[0], /no baseline/);
+    r = run(before, after, '--baseline', base);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /go together/);
+    r = run(before);
+    assert.match(r.stderr, /two saves/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

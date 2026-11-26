@@ -364,6 +364,9 @@ ark-export edit remap-classes <Map.ark> --mapping FILE [--assets FILE] [--no-pro
 ark-export edit remove-classes <Map.ark> (--class C | --package PACKAGE)... [--assets FILE]
                      [--trust-short-names] [--refund FILE.csv|.json] [--grid UNITS] [--report FILE]
                      (--dry-run | --out FILE)
+ark-export edit diff-classes <vorher.ark> <nachher.ark> [--baseline FILE --baseline-after FILE]
+                     [--refund FILE.csv|.json] [--grid UNITS] [--report FILE] [--full]
+                                                  was das Spiel beim Laden verworfen hat, je Klasse (liest nur)
 ark-export edit asset-list <Content/Mods>...      Asset-Pfade installierter Mods (Eingabe für --assets)
 ```
 
@@ -527,7 +530,28 @@ Geschrieben (statt Trockenlauf) braucht ein Lauf auf Gen2 rund 20–26 s und 12,
 - Ausgabe: Der Bericht steht als JSON auf stdout, mit `--report FILE` zusätzlich in einer Datei. `--refund FILE.json` schreibt die Erstattungsliste als JSON-Zeilen mit den CSV-Spaltennamen.
 - Fehler: Exit-Code 1, mit `ARK_EXPORT_ERRORS=json` als `{"error": "…"}` auf stderr.
 
-**Vor dem Einspielen** gehört jeder Lauf zuerst auf eine Testinstanz: Save laden, Log prüfen, `saveworld`, den neuen Save mit `ark-export` lesen und mit dem Bericht vergleichen. Dazu gehört ein Vergleichslauf mit dem unveränderten Save und derselben Mod-Liste. Erst die Objekte je Klasse beider Läufe zeigen, was das Spiel zusätzlich verwirft (siehe unten).
+**Vor dem Einspielen** gehört jeder Lauf zuerst auf eine Testinstanz: Save laden, Log prüfen, `saveworld`, den neuen Save mit `ark-export` lesen und mit dem Bericht vergleichen. Dazu gehört ein Vergleichslauf mit dem unveränderten Save und der alten Mod-Liste. Erst der Vergleich beider Läufe zeigt, was das Spiel zusätzlich verwirft (siehe unten). Diesen Vergleich macht `diff-classes`.
+
+#### Zusatzverluste finden: `diff-classes`
+
+```
+ark-export edit diff-classes bereinigt.ark bereinigt-gespeichert.ark \
+  --baseline original.ark --baseline-after original-gespeichert.ark --refund zusatz.csv
+```
+
+- **Vorher und nachher:** `vorher` ist der Save, der auf die Testinstanz kam, etwa die Ausgabe von `remove-classes`. `nachher` ist der Save, den das Spiel nach dem Laden mit `saveworld` geschrieben hat.
+- **Vergleichslauf:** `--baseline` ist der unveränderte Save, `--baseline-after` das, was das Spiel daraus mit der alten Mod-Liste gemacht hat. Was das Spiel dort ebenfalls verwirft, zählt nicht als Zusatzverlust. Das sind etwa verdorbenes Fleisch, verfallene Bauteile oder gestorbene wilde Tiere. Ohne Vergleichslauf zählt alles Verlorene, der Bericht warnt dann.
+- **Zuordnung:** Items über ihre ItemID, Tiere über DinoID1/DinoID2, alles andere über den Namen, bei Actors von Unterleveln mit der Datennummer. Doppelt gespeicherte Actors zählen einmal. Rezept-Einträge (`bIsEngram`) bleiben außen vor, weil das Spiel sie beim Laden neu anlegt. Inhalte von Kryokapseln und Seelen vergleicht der Befehl nicht einzeln. Sie zählen, wenn ihr Behälter verloren geht.
+- **Bericht:** je Klasse `before`, `after`, `lost`, `baselineLost`, `extra` (Zusatzverlust) und `gained`. Dazu kommen `classChanged` für Objekte, die nach dem Laden eine andere Klasse tragen, und `extraByClass` als Überblick. Auf stdout stehen die ersten 50 Klassen, mit `--full` oder `--report` alle.
+- **Erstattungsliste:** dieselben Spalten wie bei `remove-classes`.
+  - `reason` ist `lost` für das Objekt selbst und `content` für den Inhalt eines verlorenen Behälters oder einer verlorenen Kryokapsel.
+  - Zeilen gibt es für Items, Bauteile, gezähmte Tiere und Spielerfiguren.
+  - Keine eigene Zeile bekommen Komponenten, Buff-Daten, wilde Tiere (Team unter 50.000) und sonstige Actors wie Buffs oder Waffen in der Hand. Sie zählen unter `notRefunded`, ihr eingebetteter Inhalt bekommt trotzdem Zeilen.
+
+**Geprüft:**
+- **Echter Spiellauf:** Ein TheIsland-Save vor dem Start (`NewLaunchBackup`) und nach einer Testsitzung mit Spieler: 51.813 von 51.831 Objekten fanden sich nach Laden und Speichern wieder. Die 18 verlorenen sind wilde Tiere, eine gestorbene Spielerfigur samt Fäusten und Buffs sowie Komponenten.
+- **Gegen `remove-classes`:** Gen2 unverändert gegen die Ausgabe von `remove-classes --package DinoStorage2 --package CraftableTributeTerminal`. Die Erstattungsliste gleicht der von `remove-classes` bis auf vier Einträge, nämlich zwei Dino-Storage-Buffs und das Verwaltungsobjekt `DinoStorage2CCA_C`. Es bleiben 11.191 Einträge in 2.687 Zeilen für 168 Stämme.
+- **Laufzeit:** mit Vergleichslauf (vier Gen2-Saves) 14 s und 2,3 GB mit Node, 16 s und 5,2 GB mit Bun. Die Saves werden nacheinander gelesen.
 
 #### Spieltest auf einem Server
 
@@ -542,7 +566,7 @@ Getestet am 26.11.2026 auf einer Testinstanz mit einer frischen Kopie des Gen2-S
 
 Was daraus folgt:
 - `remove-classes` entfernt genau das, was das Spiel ohne die Mod selbst verwerfen würde, nicht mehr und nicht weniger. Dazu liefert es die Erstattungsliste, die das Spiel nicht hat. Ohne den Editor gehen auch der Inhalt der Terminals und Seelenfallen still verloren.
-- **Kollateralverluste:** Das Spiel sucht die Klasse eines Objekts über ihren Kurznamen unter den geladenen Klassen. Hat nur die entfernte Mod eine Kernklasse nachgeladen, fehlt diese danach, und ihre Objekte gehen verloren. Auf Gen2 verschwanden so 105 Eier des Bionic-Giga (`PrimalItemConsumable_Egg_Gigant_Bionic_C`, 4 davon befruchtet). Die `PrimalGameData` von Dino Storage v2 verweist auf `BionicGigant_Character_BP`. Erst darüber kennt der Server die Klasse des Eis, denn Bionic-Gigas selbst gibt es auf der Karte nicht. Eier von Bionic-Rex, -Stego und anderen, die dort leben, blieben erhalten. Solche Verluste stehen nicht in der Erstattungsliste. Sie zeigt nur der Vergleich mit dem Vergleichslauf.
+- **Kollateralverluste:** Das Spiel sucht die Klasse eines Objekts über ihren Kurznamen unter den geladenen Klassen. Hat nur die entfernte Mod eine Kernklasse nachgeladen, fehlt diese danach, und ihre Objekte gehen verloren. Auf Gen2 verschwanden so 105 Eier des Bionic-Giga (`PrimalItemConsumable_Egg_Gigant_Bionic_C`, 4 davon befruchtet). Die `PrimalGameData` von Dino Storage v2 verweist auf `BionicGigant_Character_BP`. Erst darüber kennt der Server die Klasse des Eis, denn Bionic-Gigas selbst gibt es auf der Karte nicht. Eier von Bionic-Rex, -Stego und anderen, die dort leben, blieben erhalten. Solche Verluste stehen nicht in der Erstattungsliste von `remove-classes`. `diff-classes` findet sie und schreibt sie als eigene Erstattungszeilen (siehe oben).
 - Profile liest der Server erst, wenn sich der Spieler anmeldet. Ob umgeschriebene Engram-Listen im Spiel greifen, ist deshalb noch offen.
 
 ## Laufzeit und Speicher
@@ -630,6 +654,7 @@ Aufbau:
   - Lädt es Kryokapseln mit geleertem Sattelplatz? Im Gen2-Test kam keiner vor.
   - Welche Klasse nimmt es bei einem Kurznamen, den Kernspiel und Mod beide führen, wenn beide geladen sind? Der Spieltest zeigt nur, dass es unter den geladenen Klassen sucht.
   - Behalten Spieler nach `remap-classes` ihre Engramme? Dafür muss sich ein Spieler mit umgeschriebenem Profil anmelden.
+  - `diff-classes` mit einem vollständigen Vergleichslauf auf Gen2. Es sollte genau die 105 Bionic-Giga-Eier als Zusatzverlust melden. Die gespeicherten Saves des Spieltests liegen nicht mehr vor.
 - Save-Version 10–11 schreiben (Stored-Data-Blöcke), ASA.
 
 ## Quellen und Lizenz

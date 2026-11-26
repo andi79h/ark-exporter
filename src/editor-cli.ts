@@ -4,6 +4,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { ClassRemapper, OwnerIndex, parseMapping, type Scope, type TeamInfo } from './classes.ts';
+import { diffSaves, extraByClass, indexSave, lostKeys } from './diff.ts';
 import { SaveEditor } from './editor.ts';
 import { clearInventories, deleteObjects, moveObjects, type Owner, type Placement, refreshDecay } from './operations.ts';
 import { checkPlacement, copyObjects, exportPattern, parsePattern, placePattern } from './pattern.ts';
@@ -43,6 +44,12 @@ export const EDIT_USAGE = `Editing world saves (.ark, ASE save version 9) – wr
                        [--refund FILE.csv|.json] [--grid UNITS] [--report FILE] (--dry-run | --out FILE)
                                                    remove classes everywhere (also foreign inventories,
                                                    cryopods, soul traps) with a refund list per tribe
+  ark-export edit diff-classes <before.ark> <after.ark> [--baseline FILE --baseline-after FILE]
+                       [--refund FILE.csv|.json] [--grid UNITS] [--report FILE] [--full]
+                                                   what the game dropped on load, per class (reads only):
+                                                   before = save put in place, after = what the game wrote;
+                                                   the baseline pair (unedited save, its re-save) takes out
+                                                   what the game drops by itself; extra loss as refund list
   ark-export edit asset-list <Content/Mods>...     asset paths of installed mods, input for --assets
 
 SELECTION (at least one of tribe, owner, box, radius, class):
@@ -316,7 +323,7 @@ export async function editCommand(argv: string[]): Promise<number> {
     mapping: { type: 'string' }, assets: { type: 'string' }, 'no-profiles': { type: 'boolean', default: false },
     cluster: { type: 'string' }, 'trust-short-names': { type: 'boolean', default: false }, report: { type: 'string' },
     'dry-run': { type: 'boolean', default: false }, 'out-dir': { type: 'string' }, package: { type: 'string', multiple: true },
-    refund: { type: 'string' }, grid: { type: 'string' },
+    refund: { type: 'string' }, grid: { type: 'string' }, baseline: { type: 'string' }, 'baseline-after': { type: 'string' },
   } as const;
   const { values: v, positionals } = parseArgs({ args, options: opts, allowPositionals: true });
   const values = v as Values;
@@ -506,6 +513,41 @@ export async function editCommand(argv: string[]): Promise<number> {
       }
       if (dry) { writeReport(values, input, report); print(report); return 0; }
       return finish(input, ed, values, report);
+    }
+    case 'diff-classes': {
+      if (positionals.length !== 2) throw new Error('diff-classes needs two saves: <before.ark> <after.ark>');
+      const [beforeFile, afterFile] = positionals;
+      const base = values.baseline as string | undefined;
+      const baseAfter = values['baseline-after'] as string | undefined;
+      if ((base === undefined) !== (baseAfter === undefined)) throw new Error('--baseline and --baseline-after go together');
+      const grid = number(values.grid as string | undefined, '--grid') ?? 10_000;
+      if (grid <= 0) throw new Error('--grid must be positive');
+      // One save at a time in memory: the baseline pair shrinks to the keys it lost.
+      const baselineLost = base && baseAfter
+        ? lostKeys(indexSave(SaveEditor.open(readFileSync(base))), indexSave(SaveEditor.open(readFileSync(baseAfter))))
+        : undefined;
+      const after = indexSave(SaveEditor.open(readFileSync(afterFile)));
+      const ed = SaveEditor.open(readFileSync(beforeFile));
+      if (!ed.hibernationEmpty) process.stderr.write('warning: the save has hibernation entries; creatures stored there are not compared\n');
+      const { report: r, refunds } = diffSaves(ed, after, baselineLost);
+      const map = basename(beforeFile).replace(/\.ark$/i, '');
+      const rows = aggregateRefunds(refunds, grid);
+      const report: Record<string, unknown> = {
+        operation: 'diff-classes', before: basename(beforeFile), after: basename(afterFile),
+        ...(base && baseAfter ? { baselineFiles: [basename(base), basename(baseAfter)] } : {}),
+        ...r, extraByClass: extraByClass(refunds),
+        refund: { rows: rows.length, tribes: new Set(rows.map((x) => x.team)).size, entries: refunds.length },
+      };
+      if (!baselineLost) report.warnings = ['no baseline: what the game drops by itself (spoiling, decay, wild creatures) counts as extra loss'];
+      if (values.refund) {
+        const file = values.refund as string;
+        const text = /\.json$/i.test(file) ? `${JSON.stringify(refundJson(map, rows), null, 1)}\n` : refundCsv(map, rows);
+        report.refundFile = writeOut(beforeFile, file, [Buffer.from(text)], values.force === true);
+      }
+      writeReport(values, beforeFile, report);
+      const shown = values.full ? r.classes : r.classes.slice(0, 50);
+      print({ ...report, classes: shown, ...(shown.length < r.classes.length ? { classesShown: `${shown.length} of ${r.classes.length} (--full or --report for all)` } : {}) });
+      return 0;
     }
     case 'asset-list': {
       if (!positionals.length) throw new Error('asset-list needs at least one Content/Mods directory');
