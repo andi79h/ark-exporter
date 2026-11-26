@@ -644,7 +644,8 @@ test('cluster CLI: a creature from the world of a save into the uploads', () => 
     const res = JSON.parse(list.stdout);
     assert.deepEqual(res.warnings, ['3 creatures in the world without maximum torpidity or weight for the upload list (no fitting archives of their class in the save)', '1 dead tamed creatures in the world left out']);
     const rex = res.creatures.find((c: { kind: string; cls: string }) => c.kind === 'world' && c.cls === 'Rex_Character_BP_C');
-    assert.deepEqual([rex.blueprint, rex.blueprintFrom, rex.level, rex.droppedRefs], [REX, 'same-class', LEVEL, { InventoryItems: 1, TamedFollowTarget: 1 }]);
+    assert.deepEqual([rex.blueprint, rex.blueprintFrom, rex.mapPackage, rex.droppedRefs], [REX, 'same-class', LEVEL, { InventoryItems: 1, TamedFollowTarget: 1 }]);
+    assert.equal(rex.level, 30); // the creature's level, not the map package
     assert.deepEqual(rex.location, { x: 100, y: 200, z: 300 });
 
     const out = join(dir, 'out');

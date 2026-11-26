@@ -330,7 +330,7 @@ function dinosCommand(args: string[]): number {
       species: s.species, bytes: s.data.length,
       ...(s.world ? {
         location: s.world.location, tribeName: s.world.tribeName, droppedRefs: s.world.droppedRefs,
-        removedProps: s.world.removedProps, removedObjects: s.world.removedObjects, level: s.world.level?.[2] ?? null,
+        removedProps: s.world.removedProps, removedObjects: s.world.removedObjects, mapPackage: s.world.level?.[2] ?? null,
         maxStatus: maxStatusView(s.world.maxStatus),
       } : {}),
       ...(s.problem ? { problem: s.problem } : {}),
