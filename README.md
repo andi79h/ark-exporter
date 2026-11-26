@@ -252,12 +252,14 @@ Was Spieler an Obelisk, Terminal oder Transmitter hochladen, legt der Server pro
 Wichtige Felder in `ItemNetInfo`:
 - `ItemArchetype`: Klasse als `BlueprintGeneratedClass /Game/…/X.X_C`.
 - `ItemId`: `ItemID1`, `ItemID2` (je UInt32). In allen untersuchten Dateien kleiner als 10⁹; das Spiel erzeugt sie offenbar als Zufalls-Float × 10⁹.
-- `ItemStatValues[0..7]` (UInt16): allgemeine Qualität, Rüstung, Haltbarkeit (Maximum), Schaden, Munition, Kälteschutz, Gewicht, Hitzeschutz. Die Werte im Spiel ergeben sich daraus mit den Faktoren der jeweiligen Item-Klasse.
-- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen), `ItemRating` (Float), `ItemDurability` (Float, aktuelle Haltbarkeit).
-- `ItemQuantity` (UInt32): **Anzahl − 1.** Einzelne Items und Blaupausen haben 0, ein voller 100er-Stapel hat 99, ein voller 50er-Stapel 49. Im Spieltest am 20.11.2026 kamen bei `ItemQuantity` 100 genau 101 Stück an. `cluster show` meldet deshalb `quantity` (Anzahl, also `ItemQuantity` + 1) und daneben `quantityRaw` (gespeicherter Wert).
+- `ItemStatValues[0..7]` (UInt16): allgemeine Qualität, Rüstung, Haltbarkeit (Maximum), Schaden, Munition, Kälteschutz, Gewicht, Hitzeschutz. Die Werte im Spiel ergeben sich daraus mit den Faktoren der jeweiligen Item-Klasse, beim Krawallhemd etwa Rüstung = 115 + 0,023 × Wert und maximale Haltbarkeit = 120 + 0,03 × Wert. Das Spiel übernimmt sie ohne Begrenzung: 65535 ergab Rüstung 1622 bzw. beim Gewehr 755,4 % Schaden.
+- `ItemQualityIndex` (Byte, 0–5: primitiv … aufgestiegen) und `ItemRating` (Float) werden unverändert übernommen und nicht neu berechnet.
+- `ItemDurability` (Float): **aktuelle Haltbarkeit als absoluter Wert.** Das Spiel schreibt bei eigenen Uploads genau so (200 bei einem Hemd mit 200 von 420). Im Spielstand steht danach der Anteil am Maximum. Begrenzt wird nicht: 100 000 ergab das 47- bzw. 139-Fache des Maximums. Also höchstens das Maximum der Item-Klasse eintragen.
+- `ItemQuantity` (UInt32): **Anzahl − 1.** Einzelne Items und Blaupausen haben 0, ein voller 100er-Stapel hat 99, ein voller 50er-Stapel 49. Im Spieltest am 20.11.2026 kamen bei `ItemQuantity` 100 genau 101 Stück an. `cluster show` meldet deshalb `quantity` (Anzahl, also `ItemQuantity` + 1) und daneben `quantityRaw` (gespeicherter Wert). Mehr als die Stapelgröße kappt das Spiel beim Herunterladen: 1000 Metallbarren ergaben 300, der Rest war weg. Größere Mengen deshalb auf mehrere Einträge verteilen (`--stack`).
 - `bAllowRemovalFromInventory` (Bool): **muss `true` sein, sonst lässt ARK das Item nicht herunterladen.** Im Spieltest ließen sich `add-item`-Items mit `false` weder per Doppelklick noch per T herunterladen. In derselben Datei gingen Items mit `true` problemlos. In echten Uploads steht das Flag gemischt, bei Blaupausen fast immer `false`. `cluster show` meldet es als `allowRemoval`.
-- `ExpirationTimeUTC` (UInt32, Unix-Sekunden). In allen untersuchten Dateien genau `UploadTime + 86400`.
-- `OwnerPlayerDataID` (UInt64): die `PlayerDataID` des Spielers, der hochgeladen hat.
+- `UploadTime` (im Eintrag, nicht in `ItemNetInfo`): **bestimmt den Ablauf.** Der Obelisk bietet ein Item an, solange `UploadTime` + `TributeItemExpirationSeconds` (ASE-Standard 86 400) in der Zukunft liegt, und zeigt die Restzeit an. Eine Upload-Zeit in der Zukunft verlängert die Frist: +3 Tage ergab 95:59, +1 Jahr 8783:59, und alle ließen sich herunterladen. Abgelaufene Einträge zeigt der Obelisk nicht. Sie bleiben in der Datei, bis der Server sie das nächste Mal schreibt, dann fliegen sie heraus.
+- `ExpirationTimeUTC` (UInt32, Unix-Sekunden): **wird vom Spiel ignoriert.** Vergangenheit, 0 und 4294967295 kamen alle an. Bei eigenen Uploads schreibt das Spiel 0 und beim nächsten Zurückschreiben `UploadTime + 86400`.
+- `OwnerPlayerDataID` (UInt64): Bei eigenen Uploads schreibt das Spiel **0**, das Item wartet dann in der Liste. **Steht dort die `PlayerDataID` des Spielers, wandert das Item beim Öffnen von Obelisk, Transmitter oder Terminal ungefragt ins Inventar.** Eine fremde ID verhält sich wie 0. Die Spielzeit-Felder `UploadEarliestValidTime` und `LastAutoDurabilityDecreaseTime` spielen dabei keine Rolle.
 
 **Lesen und Schreiben.** `src/tree.ts` liest Eigenschaften verlustfrei: Typ, Index, Reihenfolge und Kodierung bleiben erhalten. Werte, die der Schreiber anders kodieren würde, behalten ihre Original-Bytes, solange sie unverändert bleiben; das sind Texte in ungewöhnlicher Kodierung oder NaN mit Nutzlast. Unbekannte Teile bleiben Rohbytes. Dadurch wird jede Datei byte-genau zurückgeschrieben. `cluster check` prüft das für ganze Ordner, auch für die eingebetteten Tier- und Charakterarchive. Der Befehl schreibt nichts.
 
@@ -267,19 +269,25 @@ ark-export cluster check <datei | ordner>...       jede Datei lesen und zurücks
 ark-export cluster add-item <datei> --blueprint BP (--out DATEI | --in-place --backup ORDNER) [Optionen]
 ```
 
-Beispiel: ein aufgestiegenes Krawallhemd mit freien Werten, eine Woche abholbar, als neue Datei:
+Beispiel: ein aufgestiegenes Krawallhemd mit freien Werten und voller Haltbarkeit, eine Woche am Obelisken abholbar, als neue Datei:
 
 ```bash
 bin/ark-export cluster add-item 7656119xxxxxxxxxx \
   --blueprint "Blueprint'/Game/PrimalEarth/CoreBlueprints/Items/Armor/Riot/PrimalItemArmor_RiotShirt.PrimalItemArmor_RiotShirt'" \
-  --stats 0,30000,30000 --quality 5 --rating 15 --durability 1000 --expires-in 604800 \
+  --stats 0,30000,30000 --quality 5 --rating 15 --durability 1020 --valid-for 604800 \
   --custom-name "Treuebonus" --out /tmp/neu
 ```
 
-- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. `OwnerPlayerDataID` kommt aus dem hochgeladenen Charakter oder den vorhandenen Items. `--quantity` ist die Anzahl im Spiel (mindestens 1); geschrieben wird `ItemQuantity` = Anzahl − 1, also `--quantity 100` → 99. `bAllowRemovalFromInventory` ist immer `true`, auch bei `--blueprint-copy`; `--disallow-removal` schreibt `false`, nur für Tests. Ohne Angabe gilt: 1 Stück, Ablauf nach 86 400 s. Leere Dateien bekommen die vollständige Struktur.
+- **Neues Item:** Die 95 Felder stehen in der Reihenfolge, die das Spiel schreibt (geprüft gegen echte Dateien). Die ItemID ist zufällig, kleiner als 10⁹ und in der Datei eindeutig. Leere Dateien bekommen die vollständige Struktur.
+  - **Besitzer:** `--owner` ist standardmäßig 0 wie bei Uploads des Spiels, das Item wartet am Obelisken. `--owner player` trägt die `PlayerDataID` aus der Datei ein, dann landet das Item beim nächsten Öffnen von selbst im Inventar. Eine Zahl wird so übernommen.
+  - **Frist:** `--valid-for S` bzw. `--valid-until T` (Unix-Sekunden oder ISO-Datum) setzen `UploadTime` = Ende − `--lifetime`. `--lifetime` ist `TributeItemExpirationSeconds` des Servers, Standard 86 400. `ExpirationTimeUTC` wird wie vom Server auf `UploadTime` + Lebensdauer gesetzt. `--upload-time` setzt die Upload-Zeit direkt. `--expires-in` und `--expires-at` sind die alten Namen von `--valid-for` und `--valid-until`.
+  - **Menge:** `--quantity` ist die Anzahl im Spiel (mindestens 1). Geschrieben wird `ItemQuantity` = Anzahl − 1, also `--quantity 100` → 99. `--stack N` verteilt die Menge auf Einträge mit höchstens N Stück (`--quantity 1000 --stack 300` → 300, 300, 300, 100), dann ist `added` in der Ausgabe eine Liste.
+  - `bAllowRemovalFromInventory` ist immer `true`, auch bei `--blueprint-copy`. `--disallow-removal` schreibt `false`, nur für Tests.
+  - Ohne Angabe gilt: 1 Stück, Besitzer 0, Upload jetzt, also einen Tag abholbar.
 - **Prüfung:** Vor dem Schreiben wird das Ergebnis neu gelesen. Danach muss es ein Item mehr haben und sich selbst byte-genau zurückschreiben lassen. Lässt sich schon die Eingabe nicht byte-genau zurückschreiben, bricht der Befehl ab.
 - **`--in-place`:** Sichert das Original zuerst nach `--backup`. Dann schreibt der Befehl eine temporäre Datei daneben und ersetzt die Datei per `rename`. Rechte, Besitzer und Gruppe bleiben erhalten. Hat jemand die Datei seit dem Lesen geändert, etwa der Spielserver, wird nichts ersetzt.
-- **Noch ungeklärt:** Ob der Server eingeschleuste Items so annimmt, ist im Spiel noch nicht getestet. Ebenso offen ist, ob er `ExpirationTimeUTC` oder `TributeItemExpirationSeconds` ab `UploadTime` beachtet und was bei sehr hohen Werten passiert. Siehe [Offen](#offen).
+- **Gleichzeitiger Zugriff:** Der Server liest die Datei, wenn ein Spieler das Fenster von Obelisk, Transmitter oder Terminal öffnet. Beim Einloggen liest er sie nicht, bei „Tributinventar aktualisieren“ auch nicht. Nach jedem Hoch- oder Herunterladen schreibt er den Stand zurück, den er beim Öffnen gelesen hat. **Was eingespielt wird, während der Spieler das Fenster offen hat, geht beim nächsten Hoch- oder Herunterladen verloren.** Die Prüfung von `--in-place` erkennt das nicht, denn der Server schreibt erst danach. Sicher ist das Einspielen, solange der Spieler offline ist. Ist er online, nur mit Nachkontrolle: später prüfen, ob die ItemID noch in der Datei steht oder abgeholt wurde.
+- **Spieltest:** Alles oben ist am 26.11.2026 auf einem ASE-Testserver (358.24, Zweig `preaquatica`) geprüft worden: Anzeige und Restzeit am Obelisken, Herunterladen, Inventar danach per Spielstand. Am 20.11.2026 kamen `ItemQuantity` und `bAllowRemovalFromInventory` dazu.
 
 ### Tiere in Cluster-Dateien
 
@@ -295,7 +303,7 @@ ark-export cluster copy-item <datei> --from DATEI --index N (--out DATEI | --in-
 - **Was sich ändert:** Das Tier bekommt neue, zufällige `DinoID1/2` (im Archiv und im Eintrag) und `UploadTime` = jetzt. Mit `--name` kommt ein neuer `TamedName` dazu. Alles andere bleibt Byte für Byte: Werte, Mutationen, Abstammung, Prägung, Farben, Inventar und Besitzfelder. Mit `--keep-id` bleiben die IDs erhalten; das ist nur sinnvoll, wenn das Original nicht mehr existiert. Stammt die Quelle aus einem Upload-Eintrag, werden dessen Felder übernommen. Sonst werden sie aus dem Archiv gebildet: `DinoName` als „Name - Lvl N (Art)“ und die `DinoStats`-Texte im Format des Spiels. Stufe = `BaseCharacterLevel` + `ExtraCharacterLevel`; Nahkampf und Tempo werden als (1 + Wert) × 100 % angezeigt.
 - **`copy-item`** kopiert ein hochgeladenes Item, etwa eine gefüllte Seele, in eine andere Datei. Es bekommt eine neue ItemID, Upload- und Ablaufzeit sowie die `OwnerPlayerDataID` des Ziels. Tiere darin erhalten neue IDs. Dino Storage führt die IDs zusätzlich als Text `"id1 id2"` und den Besitzer als SteamID in `CustomDataStrings`; beides wird ersetzt. Die SteamID kommt standardmäßig aus dem Namen der Zieldatei. `bAllowRemovalFromInventory` setzt der Befehl auf `true`, weil ARK Items mit `false` nicht herunterladen lässt (siehe oben). Die Ausgabe nennt den alten Wert (`allowRemovalBefore`). `--keep-removal-flag` übernimmt den Wert der Quelle und warnt, wenn er nicht `true` ist.
 - **Prüfungen:** wie bei `add-item`. Gelesen wird streng, und vor dem Schreiben wird alles erneut gelesen und zurückgeschrieben. Mit `--in-place` wird zuerst gesichert, dann atomar ersetzt. Ein Tier, dessen Archiv sich nicht byte-genau zurückschreiben lässt, wird nicht kopiert. Bei mehr als 20 Tieren in der Datei gibt es eine Warnung (`MaxTributeDinos`).
-- **Erprobt** an Kopien echter Dateien: 45 Cluster-Dateien mit 55 hochgeladenen Tieren, 7 Kryokapseln und 3 gefüllten Seelen lassen sich alle in leere und volle Dateien einsetzen. Aus einem echten Genesis-2-Spielstand gilt das für 4.570 von 4.571 Tieren aus Seelen, Recovery-Liste und Vivarien; die Ausnahme ist eine Ferox-Gestalt ohne Klassenpfad. Ob der Server ein so eingesetztes Tier zum Herunterladen anbietet, ist im Spiel zu prüfen (siehe [Offen](#offen)).
+- **Erprobt** an Kopien echter Dateien: 45 Cluster-Dateien mit 55 hochgeladenen Tieren, 7 Kryokapseln und 3 gefüllten Seelen lassen sich alle in leere und volle Dateien einsetzen. Aus einem echten Genesis-2-Spielstand gilt das für 4.570 von 4.571 Tieren aus Seelen, Recovery-Liste und Vivarien; die Ausnahme ist eine Ferox-Gestalt ohne Klassenpfad. Im Spieltest am 20.11.2026 bot der Obelisk so eingesetzte Tiere mit Stufe und Werte-Vorschau an. Nach dem Herunterladen gehörten sie dem Abholer, Werte, Farben, Eltern und Mutationen stimmten. Eine mit `copy-item` kopierte Seele ließ sich auspacken und gehörte dem Empfänger.
 
 ### Tiere umfärben
 
@@ -594,16 +602,10 @@ Aufbau:
 - Verlauf schneller machen: ein Durchlauf über beide nach Schlüssel sortierten Snapshots statt mehrerer SQL-Joins.
 - Räumlicher Index (SQLite R*Tree) für Suchen nach Bewegungsmustern.
 - ARK: Survival Ascended (anderes Save-Format).
-- Cluster-Dateien, nur im Spiel auf einem Testcluster zu klären:
-  - Wird ein angehängtes Item am Obelisken angezeigt und lässt es sich herunterladen?
-  - Welche Zeit zählt beim Ablauf: `ExpirationTimeUTC` oder `UploadTime` + `TributeItemExpirationSeconds`? Und was bewirken 0 oder 4294967295?
-  - Hochgeladene Blaupausen haben zusätzlich alle `bIsEngram` und fast immer `bAllowRemovalFromInventory` = `false`. `--blueprint-copy` setzt dagegen nur `bIsBlueprint` und `bAllowRemovalFromInventory` = `true`. Lässt sich so eine Blaupause herunterladen? (Geklärt sind `ItemQuantity` = Anzahl − 1 und `bAllowRemovalFromInventory` = `true` bei anderen Items, siehe oben.)
-  - Wird `ItemDurability` auf das Maximum aus `ItemStatValues[2]` begrenzt, wird `ItemRating` neu berechnet, und was gilt für sehr hohe Werte (65535)?
-  - Spielt `OwnerPlayerDataID` beim Herunterladen eine Rolle?
-  - Wann liest und schreibt der Server die Datei? Kann er eine gerade eingespielte Änderung mit einem älteren Stand überschreiben, etwa wenn der Spieler gleichzeitig hochlädt?
-  - Bietet der Server ein mit `add-dino` eingesetztes Tier zum Herunterladen an? Wem gehört es danach: dem Abholer, wie `SpawnFromDinoDataEx(…, ForTeam, …)` vermuten lässt, oder weiter dem alten Stamm aus `TargetingTeam`?
-  - Lässt sich eine mit `copy-item` kopierte Seele vom neuen Besitzer freilassen, obwohl darin noch die Stamm-ID des alten Besitzers steht?
-  - Kommt ein mit `recolor` umgefärbtes Tier mit den neuen Farben aus dem Obelisken, und erben seine Jungen sie? Liest das Spiel `ColorSetNames`, oder genügen die IDs?
+- Cluster-Dateien, im Spiel noch zu klären (Items sind seit dem Test am 26.11.2026 geklärt, siehe [Cluster-Dateien](#cluster-dateien)):
+  - Warum bleibt die Startnotiz trotz `OwnerPlayerDataID` des Spielers am Obelisken liegen, statt ins Inventar zu wandern?
+  - Was passiert bei `--owner player`, wenn das Inventar voll oder zu schwer ist?
+  - Erben die Jungen eines mit `recolor` umgefärbten Tiers die neuen Farben? Liest das Spiel `ColorSetNames`, oder genügen die IDs? (Die Farben selbst kamen im Test am 20.11.2026 an und blieben beim erneuten Hochladen erhalten.)
 
 - Spielstände ändern, im Spiel zu klären:
   - Lädt der Server einen geänderten Save und schreibt er ihn per `saveworld` unverändert weiter?

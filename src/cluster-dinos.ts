@@ -16,7 +16,7 @@
 // recolorDino sets the colour regions of an uploaded creature in place (colors.ts).
 import { randomInt } from 'node:crypto';
 import {
-  clusterData, clusterEntries, createClusterTree, DEFAULT_EXPIRES_IN, defaultOwner, itemIds, randomItemId,
+  clusterData, clusterEntries, createClusterTree, type ItemOwner, itemIds, randomItemId, resolveOwner, uploadTiming,
 } from './cluster.ts';
 import { colorName, isKnownColor, REGIONS, storedColorSetName } from './colors.ts';
 import { readSave } from './savegame.ts';
@@ -580,13 +580,14 @@ export const describeColors = (ids: number[]): { region: number; id: number; nam
 // ---------------------------------------------------------------- copying items
 
 export interface CopyItem {
-  /** OwnerPlayerDataID. Default: the PlayerDataID of the target file (see defaultOwner). */
-  owner?: bigint | number | string;
+  /** OwnerPlayerDataID, see ItemOwner: 0 (default, waits at the obelisk), 'player' (moves into the inventory) or an ID. */
+  owner?: ItemOwner;
   /** Replaces SteamIDs (17 digits, 7656119...) in CustomDataStrings, e.g. the owner of a Dino Storage soul. */
   steamId?: string;
+  /** UploadTime, validUntil, lifetime and expiration as for NewItem (see uploadTiming). */
   uploadTime?: number;
-  /** ExpirationTimeUTC = uploadTime + expiresIn. Default 86400. */
-  expiresIn?: number;
+  validUntil?: number;
+  lifetime?: number;
   expiration?: number;
   /** Keep the DinoIDs of creatures inside. Default: new random IDs. */
   keepIds?: boolean;
@@ -602,6 +603,7 @@ export interface CopiedItem {
   itemId: [number, number];
   uploadTime: number;
   expiration: number;
+  validUntil: number;
   owner: string;
   /** bAllowRemovalFromInventory of the source and of the copy (null: not in the item). */
   allowRemovalBefore: boolean | null;
@@ -651,12 +653,10 @@ export function copyItem(
   setNumber(id as Property[], 'ItemID2', itemId[1]);
 
   const now = opts.now ?? Math.floor(Date.now() / 1000);
-  const uploadTime = o.uploadTime ?? now;
-  const expiration = o.expiration ?? uploadTime + (o.expiresIn ?? DEFAULT_EXPIRES_IN);
-  checkU32(expiration, 'expiration');
+  const { uploadTime, expiration, validUntil } = uploadTiming(o, now);
   if (findProperty(entry, 'UploadTime')) setNumber(entry, 'UploadTime', uploadTime);
   if (findProperty(list, 'ExpirationTimeUTC')) setNumber(list, 'ExpirationTimeUTC', expiration);
-  const owner = o.owner === undefined ? defaultOwner(c) : BigInt(o.owner);
+  const owner = resolveOwner(c, o.owner);
   if (findProperty(list, 'OwnerPlayerDataID')) findProperty(list, 'OwnerPlayerDataID')!.value = owner;
   if (o.steamId !== undefined && !STEAM_ID.test(o.steamId)) throw new RangeError(`not a SteamID64: ${o.steamId}`);
   const flag = findProperty(list, 'bAllowRemovalFromInventory')?.value;
@@ -703,6 +703,6 @@ export function copyItem(
   items.push(entry);
   return {
     tree,
-    added: { index: items.length - 1, itemId, uploadTime, expiration, owner: owner.toString(), allowRemovalBefore, allowRemoval, creatures },
+    added: { index: items.length - 1, itemId, uploadTime, expiration, validUntil, owner: owner.toString(), allowRemovalBefore, allowRemoval, creatures },
   };
 }
