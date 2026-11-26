@@ -14,14 +14,24 @@
 // copyItem copies an ArkItems entry (e.g. a filled soul or cryopod) with a new ItemID, upload time,
 // expiry and owner and gives the creatures inside new DinoIDs as well.
 // recolorDino sets the colour regions of an uploaded creature in place (colors.ts).
+//
+// Creatures that stand in the world of a save are objects of the save itself. They are packed into
+// the same archive form with toInlineArchive and then shaped like the archives the game writes (see
+// asGameArchive), so a creature from any backup can be handed back as an upload. A world save holds
+// no maximum stat values; for the texts of the upload list they are estimated from the archives of
+// the same class in the save (creature-stats.ts).
 import { randomInt } from 'node:crypto';
+import { assetName, classPathsInNames, InstallDir } from './class-paths.ts';
 import {
   clusterData, clusterEntries, createClusterTree, DEFAULT_EXPIRES_IN, defaultOwner, itemIds, randomItemId,
 } from './cluster.ts';
 import { colorName, isKnownColor, REGIONS, storedColorSetName } from './colors.ts';
-import { readSave } from './savegame.ts';
+import { type MaxStatus, MaxStatusEstimator } from './creature-stats.ts';
+import { SaveEditor } from './editor.ts';
+import { toInlineArchive } from './inline.ts';
+import { readSave, type SaveFile } from './savegame.ts';
 import {
-  cloneProperty, findProperty, type Property, readContainerTree, type TreeContainer, type TreeObject, writeContainerTree,
+  cloneProperty, findProperty, type Property, readContainerTree, remapRefs, type TreeContainer, type TreeObject, writeContainerTree,
 } from './tree.ts';
 import { Embedded, type Props, type Value } from './types.ts';
 
@@ -124,16 +134,50 @@ function setString(list: Property[], name: string, v: string): void {
 export interface CreatureSource {
   /** Where it was found, e.g. "ArkTamedDinosData[2]", "ArkItems[5] SoulTrap_DS_C", "Cryopod_C_12 (object 4711)". */
   where: string;
-  /** soul = Dino Storage soul, recovery = Dino Storage admin recovery list, vivarium = S+ vivarium. */
-  kind: 'upload' | 'soul' | 'recovery' | 'cryopod' | 'vivarium' | 'item';
+  /**
+   * soul = Dino Storage soul, recovery = Dino Storage admin recovery list, vivarium = S+ vivarium,
+   * world = tamed creature standing in the world of a save.
+   */
+  kind: 'upload' | 'soul' | 'recovery' | 'cryopod' | 'vivarium' | 'item' | 'world';
   data: Buffer;
   /** The ArkTamedDinosData entry the creature came from; its fields are copied by addDino. */
   entry?: Property[];
   /** Blueprint path "/Game/.../X.X" if known. */
   blueprint: string | null;
+  /**
+   * Where the blueprint path came from: the source's own data, another creature of the same class in
+   * the same file, the save's name table, the game files (installDir); null if unknown.
+   */
+  blueprintFrom?: 'own' | 'same-class' | 'name-table' | 'install-dir' | null;
+  /** Paths found when a lookup had more than one answer; none of them is used. */
+  blueprintCandidates?: string[];
   /** Display name of the species ("Tek Rex") if known. */
   species: string | null;
   info: CreatureInfo;
+  /** For kind world: where it stands and what packing it changed. */
+  world?: WorldPacking;
+  /** Set when the creature cannot be copied as it is; addDino refuses it. */
+  problem?: string;
+}
+
+export interface WorldPacking {
+  /** Object index in the save. */
+  index: number;
+  location: { x: number; y: number; z: number } | null;
+  tribeName: string | null;
+  /** References to objects outside the creature that were removed (bed, saddle structures, items), by property path. */
+  droppedRefs: Record<string, number>;
+  /** Properties left out because the game leaves them out of creature archives (see asGameArchive). */
+  removedProps: string[];
+  /** Objects left out (painting component). */
+  removedObjects: string[];
+  /** Outer names added to every object: ["PersistentLevel", map, map package]; null if unknown. */
+  level: string[] | null;
+  /**
+   * MaxStatusValues 0–7 for the texts of the upload list (DinoStats), estimated from archives of
+   * the same class in the save; null without such archives.
+   */
+  maxStatus: MaxStatus | null;
 }
 
 const LISTING = /^(.*) - Lvl (\d+) \((.+)\)$/;
@@ -182,11 +226,43 @@ function itemKind(archetype: string | null): CreatureSource['kind'] {
   return 'item';
 }
 
-/** Sources without a class path (vivariums, Ferox forms) get it from another source of the same class. */
-function fillBlueprints(list: CreatureSource[]): CreatureSource[] {
-  const known = new Map<string, string>();
-  for (const s of list) if (s.blueprint) known.set(s.info.cls, s.blueprint);
-  for (const s of list) if (!s.blueprint) s.blueprint = known.get(s.info.cls) ?? null;
+export interface ClassPathSources {
+  /** Blueprint paths by asset name, from the save's name table (classPathsInNames). */
+  names?: Map<string, Set<string>>;
+  /** Game or server installation (ShooterGame/Content). */
+  install?: InstallDir;
+}
+
+/**
+ * Sources without a class path (creatures in the world, vivariums, Ferox forms) get it from, in
+ * this order: other sources of the same class, the name table, the game files. A step with more than
+ * one answer ends the search without a path (blueprintCandidates): short names are not unique.
+ */
+function fillBlueprints(list: CreatureSource[], more: ClassPathSources = {}): CreatureSource[] {
+  const known = new Map<string, Set<string>>();
+  for (const s of list) {
+    if (!s.blueprint) continue;
+    s.blueprintFrom ??= 'own';
+    (known.get(s.info.cls) ?? known.set(s.info.cls, new Set()).get(s.info.cls)!).add(s.blueprint);
+  }
+  const steps: [NonNullable<CreatureSource['blueprintFrom']>, (cls: string) => Iterable<string>][] = [
+    ['same-class', (cls) => known.get(cls) ?? []],
+    ['name-table', (cls) => more.names?.get(assetName(cls)) ?? []],
+    ['install-dir', (cls) => more.install?.lookup(cls).paths ?? []],
+  ];
+  for (const s of list) {
+    if (s.blueprint) continue;
+    s.blueprintFrom = null;
+    for (const [from, find] of steps) {
+      const found = [...new Set(find(s.info.cls))].sort();
+      if (found.length === 1) {
+        s.blueprint = found[0];
+        s.blueprintFrom = from;
+      }
+      if (found.length > 1) s.blueprintCandidates = found;
+      if (found.length) break;
+    }
+  }
   return list;
 }
 
@@ -211,7 +287,7 @@ function creaturesInItemInfo(info: Property[]): { data: Buffer; strings: (string
 }
 
 /** Uploaded creatures and creatures in uploaded items (souls, cryopods) of a cluster file. */
-export function creaturesInCluster(c: TreeContainer | null): CreatureSource[] {
+export function creaturesInCluster(c: TreeContainer | null, opts: { installDir?: string | InstallDir } = {}): CreatureSource[] {
   const out: CreatureSource[] = [];
   clusterEntries(c, 'ArkTamedDinosData').forEach((e, i) => {
     const data = findProperty(e, 'DinoData')?.value;
@@ -243,14 +319,31 @@ export function creaturesInCluster(c: TreeContainer | null): CreatureSource[] {
       });
     }
   });
-  return fillBlueprints(out);
+  return fillBlueprints(out, { install: installDir(opts.installDir) });
+}
+
+const installDir = (d: string | InstallDir | undefined): InstallDir | undefined => (typeof d === 'string' ? new InstallDir(d) : d);
+
+export interface SaveCreatureOptions {
+  /** Also tamed creatures standing in the world (default true). */
+  world?: boolean;
+  /** Game or server installation for class paths that the save does not hold. */
+  installDir?: string | InstallDir;
+  /**
+   * Package of the map for the outer names of world creatures, e.g. "/Game/Maps/TheIslandSubMaps/TheIsland".
+   * Default: from the creature archives of the same map in the save, else from its name table.
+   */
+  level?: string;
+  /** Collects notes: creatures left out, unknown map package, save version. */
+  warnings?: string[];
 }
 
 /**
- * Creatures in cryopods, souls and other items of a savegame (.ark). Creatures that live in the world
- * are stored as objects of the save itself, not as an archive, and are not listed.
+ * Creatures of a savegame (.ark): in cryopods, souls, the Dino Storage recovery list and vivariums
+ * (archives the game wrote), and tamed creatures standing in the world (packed here, see
+ * worldCreatures).
  */
-export function creaturesInSave(buf: Buffer): CreatureSource[] {
+export function creaturesInSave(buf: Buffer, opts: SaveCreatureOptions = {}): CreatureSource[] {
   const save = readSave(buf);
   const out: CreatureSource[] = [];
   const seen = new Set<Buffer>();
@@ -280,7 +373,151 @@ export function creaturesInSave(buf: Buffer): CreatureSource[] {
   for (const o of save.objects) {
     visit(o.props as Value, `${o.names[0] ?? o.cls} (object ${o.index})`, [], [], o.cls);
   }
-  return fillBlueprints(out);
+
+  const warnings = opts.warnings ?? [];
+  let ed: SaveEditor | null = null;
+  try {
+    ed = SaveEditor.open(buf);
+  } catch (e) {
+    warnings.push(`creatures in the world and the name table are read from save version 9 only: ${(e as Error).message}`);
+  }
+  if (ed && opts.world !== false) out.push(...worldCreatures(ed, save, out, opts.level, warnings));
+  return fillBlueprints(out, { names: ed ? classPathsInNames(ed.table.names) : undefined, install: installDir(opts.installDir) });
+}
+
+/** TargetingTeam of tamed creatures (tribe or player id); wild ones have smaller teams. */
+const TAMED_TEAM = 50_000;
+
+/**
+ * Tamed creatures that stand in the world, each packed with its status and inventory component
+ * (without items) like the game packs a creature for a cryopod or an upload. Dead ones and second
+ * entries of the same actor (the game writes some actors twice) are left out.
+ */
+function worldCreatures(ed: SaveEditor, save: SaveFile, archives: CreatureSource[], level: string | undefined, warnings: string[]): CreatureSource[] {
+  if (!ed.hibernationEmpty) warnings.push('the hibernation block is not empty; creatures stored there are not listed');
+  const chain = levelChain(save, archives, ed.table.names, level);
+  if (!chain) warnings.push(`map package of ${save.dataFiles[0]} unknown (no creature archive of this map in the save); give level (--level)`);
+  const stats = new MaxStatusEstimator(archives.flatMap((s) => {
+    const a = readCreatureArchive(s.data);
+    return a?.status ? [{ cls: a.creature.cls ?? '', map: a.creature.names[2] ?? null, status: a.status.props }] : [];
+  }));
+  const map = save.dataFiles[0] ?? null;
+  let unknownStats = 0;
+  const out: CreatureSource[] = [];
+  const names = new Set<string>();
+  let dead = 0;
+  let twice = 0;
+  for (const o of save.objects) {
+    if (o.isItem || o.names.length !== 1 || !o.loc) continue;
+    const p = o.props;
+    if (typeof p.DinoID1 !== 'number' || typeof p.TargetingTeam !== 'number' || p.TargetingTeam < TAMED_TEAM) continue;
+    if (p.bIsDead === true) { dead++; continue; }
+    if (names.has(o.names[0])) { twice++; continue; }
+    names.add(o.names[0]);
+    const packed = toInlineArchive(ed, [o.index]);
+    const shaped = asGameArchive(packed.bytes, chain);
+    const a = readCreatureArchive(shaped.bytes);
+    if (!a) {
+      warnings.push(`${o.names[0]} (object ${o.index}): packed creature does not read back`);
+      continue;
+    }
+    const loc = o.loc;
+    const maxStatus = stats.estimate(a.creature.cls ?? '', map, a.status?.props ?? []);
+    if (!maxStatus || maxStatus.values[2] === null || maxStatus.values[7] === null) unknownStats++;
+    out.push({
+      where: `${o.names[0]} (object ${o.index})`, kind: 'world', data: shaped.bytes, blueprint: null, species: null, info: creatureInfo(a),
+      world: {
+        index: o.index,
+        location: { x: Number(loc.x), y: Number(loc.y), z: Number(loc.z) },
+        tribeName: typeof p.TribeName === 'string' ? p.TribeName : null,
+        droppedRefs: packed.droppedRefs, removedProps: shaped.removedProps, removedObjects: shaped.removedObjects, level: chain, maxStatus,
+      },
+      ...(chain ? {} : { problem: 'map package unknown; give level (--level)' }),
+    });
+  }
+  if (unknownStats) {
+    warnings.push(`${unknownStats} creatures in the world without maximum torpidity or weight for the upload list (no fitting archives of their class in the save)`);
+  }
+  if (dead) warnings.push(`${dead} dead tamed creatures in the world left out`);
+  if (twice) warnings.push(`${twice} second entries of the same creature left out (the game writes some actors twice)`);
+  return out;
+}
+
+/**
+ * Outer names of the objects in a creature archive. The game writes the creature as
+ * [name, "PersistentLevel", map, map package] and its components as [name, creature, ...the same];
+ * a world save has only [name] and [name, creature]. The chain comes from creature archives of the
+ * same map in the save (most frequent), else from a name table entry "/Game/.../<map>".
+ */
+export function levelChain(save: Pick<SaveFile, 'dataFiles'>, archives: CreatureSource[], names: string[], level?: string): string[] | null {
+  if (level !== undefined) {
+    if (!/^\/Game\/[\w\-/]+\/\w+$/.test(level)) throw new RangeError(`level must be a package path like /Game/Maps/TheIslandSubMaps/TheIsland, got ${level}`);
+    return ['PersistentLevel', level.slice(level.lastIndexOf('/') + 1), level];
+  }
+  const map = save.dataFiles[0];
+  if (!map) return null;
+  const count = new Map<string, number>();
+  for (const s of archives) {
+    const chain = readCreatureArchive(s.data)?.creature.names.slice(1);
+    if (chain?.length === 3 && chain[0] === 'PersistentLevel' && chain[1] === map && chain[2]?.endsWith(`/${map}`)) {
+      count.set(chain[2], (count.get(chain[2]) ?? 0) + 1);
+    }
+  }
+  const best = [...count].sort((x, y) => y[1] - x[1])[0]?.[0];
+  if (best) return ['PersistentLevel', map, best];
+  const inNames = [...new Set(names.filter((n) => n.startsWith('/Game/') && n.endsWith(`/${map}`) && !n.includes('.')))];
+  return inNames.length === 1 ? ['PersistentLevel', map, inNames[0]] : null;
+}
+
+/**
+ * Properties of the creature that the game leaves out of creature archives. Observed in a
+ * Genesis 2 save: 4,571 archives the game wrote (souls, recovery list, vivariums, from 16 maps)
+ * hold none of them, while the 351 tamed creatures in the world of the same save have them:
+ * time stamps of the source map (mating, gestation, baby age, last stasis), the tribe name, the
+ * settings for mating, wandering and whistles, the saddle structures, Instigator, a pregnancy.
+ */
+const CREATURE_DROPS = new Set([
+  'BabyCuddleFood', 'BabyCuddleType', 'BabyCuddleWalkStartingLocation', 'BabyGestationProgress', 'BabyNextCuddleTime',
+  'bCollectVictimItems', 'bEnableTamedMating', 'bEnableTamedWandering', 'bHadStaticBase', 'bIgnoreAllWhistles', 'bIsFlying',
+  'bIsLatched', 'bTargetingIgnoredByWildDinos', 'FollowStoppingDistance', 'GestationGenderOverride', 'Instigator', 'isUnderground',
+  'LastEggSpawnChanceTime', 'LastEnterStasisTime', 'LastInAllyRangeTime', 'LastSkinnedTime', 'LastUpdatedBabyAgeAtTime',
+  'LastUpdatedGestationAtTime', 'LastUpdatedMatingAtTime', 'NetworkCreationTime', 'NextAllowedMatingTime',
+  'NonDedicatedFreezeDinoPhysicsIfLevelUnloaded', 'OriginalCreationTime', 'OriginalNPCVolumeName', 'PaintingComponent',
+  'SaddleStructures', 'TamedAtTime', 'TamingLastFoodConsumptionTime', 'TribeName', 'UntamedPoopTimeCache',
+]);
+const CREATURE_DROP_PREFIX = /^(GestationEgg|NextBabyDino)/;
+/** Inventory component: the items are not packed, and the game leaves out these as well. */
+const INVENTORY_DROPS = new Set([
+  'bInitializedMe', 'CustomFolderItems', 'DisplayDefaultItemInventoryCount', 'EquippedItems', 'InventoryItems', 'ItemSlots',
+  'LastInventoryRefreshTime',
+]);
+
+/**
+ * Shapes a creature packed from a world save (toInlineArchive) like the archives the game writes:
+ * only the creature and its status and inventory components (no painting component), the outer
+ * names of the map appended, the creature's GUID zero, the properties the game leaves out removed.
+ * Everything else stays as it was in the save.
+ */
+export function asGameArchive(bytes: Buffer, level: string[] | null): { bytes: Buffer; removedProps: string[]; removedObjects: string[] } {
+  const tree = readContainerTree(bytes, { version: false });
+  const keep = tree.objects.map((o, i) => i === 0 || /StatusComponent|InventoryComponent/.test(o.cls ?? ''));
+  const local = new Map<number, number>();
+  keep.forEach((k, i) => { if (k) local.set(i, local.size); });
+  const removedObjects = tree.objects.filter((_, i) => !keep[i]).map((o) => o.cls ?? '');
+  const removed = new Set<string>();
+  const objects = tree.objects.filter((_, i) => keep[i]).map((o, i): TreeObject => {
+    const drop = (name: string): boolean => (i === 0
+      ? CREATURE_DROPS.has(name) || CREATURE_DROP_PREFIX.test(name)
+      : /InventoryComponent/.test(o.cls ?? '') && INVENTORY_DROPS.has(name));
+    const props = o.props.filter((p) => !(drop(p.name) && removed.add(p.name)));
+    remapRefs(props, (t) => local.get(t) ?? -1, true);
+    return { ...o, props, names: level ? [...o.names, ...level] : o.names, guid: i === 0 ? Buffer.alloc(16) : o.guid };
+  });
+  return {
+    bytes: writeContainerTree({ version: null, objects, gap: Buffer.alloc(0), order: [] }),
+    removedProps: [...removed].sort(),
+    removedObjects,
+  };
 }
 
 // ---------------------------------------------------------------- new upload entries
@@ -290,12 +527,17 @@ const STAT_NAMES = [
   'Fortitude', 'Crafting Skill',
 ];
 
-/** The 12 texts the upload list shows, in the format of the game ("Health: 2572.1 / 2572.1", "Melee Damage: 172.2 %"). */
-export function dinoStatTexts(a: CreatureArchive): string[] {
+/**
+ * The 12 texts the upload list shows, in the format of the game ("Health: 2572.1 / 2572.1", "Melee
+ * Damage: 172.2 %"). The maximum is MaxStatusValues, else the estimate (never below the current
+ * value), else the current value (torpidity 0).
+ */
+export function dinoStatTexts(a: CreatureArchive, estimated: (number | null)[] = []): string[] {
   const s = a.status?.props;
   return STAT_NAMES.map((name, i) => {
     const cur = num(s, 'CurrentStatusValues', i) ?? 0;
-    const max = num(s, 'MaxStatusValues', i) ?? (i === 2 ? 0 : cur);
+    const est = estimated[i];
+    const max = num(s, 'MaxStatusValues', i) ?? (est != null ? Math.max(cur, est) : i === 2 ? 0 : cur);
     if (i === 2) return `${name}: 0.0 / ${max.toFixed(1)}`;
     if (i === 8 || i === 9 || i === 11) return `${name}: ${((1 + cur) * 100).toFixed(1)} %`;
     if (i === 10) return `${name}: ${cur.toFixed(1)}`;
@@ -383,6 +625,7 @@ export function addDino(
   c: TreeContainer | null, src: CreatureSource, d: NewDino = {},
   opts: { now?: number; randomId?: () => [number, number] } = {},
 ): { tree: TreeContainer; added: AddedDino } {
+  if (src.problem) throw new RangeError(`${src.where}: ${src.problem}`);
   const a = readCreatureArchive(src.data);
   if (!a) throw new RangeError(`${src.where}: not a creature archive`);
   if (!writeContainerTree(a.tree).equals(src.data)) throw new RangeError(`${src.where}: the creature does not round-trip; refusing to copy it`);
@@ -442,7 +685,7 @@ export function addDino(
   } else {
     entry = tributeDinoEntry({
       blueprint, data: bytes, name: listingName(null), nameInMap: a.creature.names[0] ?? `${info.cls}_0`,
-      stats: dinoStatTexts(a), experience: info.experience ?? 0, dinoId, uploadTime,
+      stats: dinoStatTexts(a, src.world?.maxStatus?.values), experience: info.experience ?? 0, dinoId, uploadTime,
     });
   }
 
