@@ -351,6 +351,9 @@ ark-export edit check <Map.ark>...                Konsistenz: Verweise, eindeuti
 ark-export edit list <Map.ark> SELECTION [--full] Auswahl zählen: Klassen, Besitzer, Bereich
 ark-export edit delete <Map.ark> SELECTION --out FILE
 ark-export edit decay <Map.ark> SELECTION --out FILE [--days N]
+ark-export edit balance-decay <Map.ark> --classes FILE --destroyable-after DAYS --removed-after DAYS
+                     --autodestroy-mult K [--period-mult P] [--min-team N] [--not-before DATE] [--undo]
+                     [--report FILE] (--dry-run | --out FILE)
 ark-export edit clear-inventory <Map.ark> SELECTION --out FILE [--engrams] [--equipped]
 ark-export edit move <Map.ark> SELECTION (--by DX,DY,DZ | --to X,Y,Z) [--rotate DEG] [--pivot X,Y,Z]
                      [--with-dinos] [--with-players] --out FILE
@@ -390,6 +393,21 @@ Koordinaten sind Unreal-Einheiten (100 = 1 m), wie sie der Admin-Befehl `ccc` im
 | `copy` | wie `pattern-save` und `pattern-place` in einem Schritt, innerhalb desselben Saves |
 
 Die Rotation um die senkrechte Achse ist exakt, weil Unreal Rotationen in der Reihenfolge Gier, Nicken, Rollen zusammensetzt. Eine Drehung der ganzen Basis addiert sich also nur zum Gier-Winkel jedes Bauteils.
+
+### Gleiche Verfallszeit für alle Materialien
+
+ASE nimmt die Verfallszeit eines Bauteils aus seiner Klasse. Stroh, Holz, Stein, Metall und Tek haben deshalb unterschiedliche Basiszeiten B, standardmäßig 4, 8, 12, 16 und 20 Tage. Nach B dürfen andere Spieler ein Bauteil abreißen. Beim Laden des Saves entfernt das Spiel ein frei stehendes Kern-Bauteil, wenn `LastInAllyRangeTime` größer als 0 ist und seit diesem Zeitpunkt mehr als `AutoDestroyOldStructuresMultiplier` × B vergangen ist. Im Save steht davon nur `LastInAllyRangeTime`, also der letzte Besuch eines Stammesmitglieds.
+
+`balance-decay` verschiebt diesen Zeitstempel je Klasse. Danach erreicht jedes Material beide Schwellen beim selben echten Alter: Ab `--destroyable-after` Tagen ist ein Bauteil für Fremde zerstörbar, nach `--removed-after` Tagen wird es beim nächsten Laden entfernt.
+
+- **Zwei Phasen:** Bis T1 zielt die Verschiebung auf die Schwelle „zerstörbar“, danach auf die Schwelle „Abriss“. Das geht für eine Klasse, solange (K − 1) × B > T2 − T1 ist. Klassen mit zu kurzer Basiszeit bleiben unverändert und stehen im Bericht unter `gapTooSmall`.
+- **Wiedererkennung:** Geschriebene Werte enden auf genau 0,40625 s. Daran erkennt der nächste Lauf sie und rechnet den echten Besuch zurück. Werte, die das Spiel seitdem geschrieben hat, zählen als echter Besuch. Das Werkzeug muss bei jedem Neustart laufen, vor dem Start der Karte.
+- **K und P müssen stimmen:** Sie müssen die Werte sein, die der Server tatsächlich anwendet. Mit anderen Werten reißt das Spiel zu früh ab. Bei ASE 358.24 ist P immer 1, weil `PvEStructureDecayPeriodMultiplier` dort nicht wirkt. `--undo` stellt die echten Zeitstempel wieder her, und zwar mit den Parametern, mit denen sie geschrieben wurden.
+- **Grenze der Spielzeit:** Für den Abriss braucht das Spiel einen positiven Zeitstempel. Auf einer Karte, deren Spielzeit noch nicht über K × B liegt, kann eine Klasse deshalb nicht entfernt werden. Das betrifft etwa Mod-Bauteile mit sehr langer Basiszeit. Der Bericht zählt diese Teile unter `notRemovable`.
+- **Übergangsfrist:** `--not-before` hält bis zu einem Datum alles zurück, was nach der neuen Regel sofort fällig wäre. Höchstens T2 − T1 Tage im Voraus.
+- **Ausfälle:** Fallen Läufe länger aus als (K − 1) × B − (T2 − T1), schützt die Rückrechnung länger, nie kürzer.
+
+Die Klassentabelle ist tabulatorgetrennt, mit Kopfzeile: `class` (kurzer Name oder voller Pfad) und die Basiszeit als `base_s`, `days_base` oder `period_s` × `class_mult` × `settings_mult`. Kurze Namen mit verschiedenen Basiszeiten gelten als mehrdeutig und werden übersprungen. Saves speichern nur kurze Klassennamen.
 
 ### Bau-Vorlagen
 
