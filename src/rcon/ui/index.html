@@ -118,12 +118,15 @@ async function api(method, path, body) {
 }
 const safe = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
 const resultText = (results) => results.map((r) => `${r.map}: ${r.ok ? (r.response || '(keine Antwort)') : r.error}`).join('\n');
+// channel from the JSON chat log; global chat (and chat from the ServerGame log, which has no channel) gets no label
+const CHANNEL_LABEL = { tribe: 'Tribe', alliance: 'Allianz', local: 'Lokal' };
 function evLine(e, withMap) {
   const name = e.name ? h('a', { class: 'n', onclick: () => e.steam_id && openPlayer(e.steam_id), title: e.steam_id || '' }, e.name) : null;
   let character = '';
-  try { character = e.data ? (JSON.parse(e.data).character || '') : ''; } catch { /* ignore */ }
+  let channel = '';
+  try { const d = e.data ? JSON.parse(e.data) : {}; character = d.character || ''; channel = CHANNEL_LABEL[d.channel] || ''; } catch { /* ignore */ }
   return h('div', { class: `ev ${e.type}` }, h('time', { title: new Date(e.ts).toLocaleString('de-DE') }, fmtT(e.ts)), withMap && e.map ? [h('span', { class: 'badge' }, e.map), ' '] : null,
-    e.type === 'chat' ? [name, character ? h('span', { class: 'muted' }, ` (${character})`) : null, ': ', h('span', { class: 't' }, e.text)]
+    e.type === 'chat' ? [channel ? h('span', { class: 'muted' }, `[${channel}] `) : null, name, character ? h('span', { class: 'muted' }, ` (${character})`) : null, ': ', h('span', { class: 't' }, e.text)]
       : h('span', { class: 't' }, `${EV_LABEL[e.type] ? `[${EV_LABEL[e.type]}] ` : ''}${e.text || ''}`));
 }
 
@@ -180,7 +183,8 @@ function cardHead(m) {
   return h('div', { class: 'head' }, h('span', { class: `dot ${m.status}`, title: m.error || m.status }), h('b', { title: m.title }, m.name),
     h('span', { class: 'muted' }, `${m.players.length} online`), h('span', { class: `badge ${m.role}` }, m.role),
     m.externalBufferReader ? h('span', { class: 'badge', title: 'Ein anderes Programm (BattleMetrics) liest GetChat/GetGameLog. Der Dienst fragt sie hier nie ab.' }, 'Puffer extern') : null,
-    h('span', { class: 'badge', title: 'Quelle für Chat und Spiellog' }, `Log: ${m.logSource}`), m.status !== 'online' && m.error ? h('span', { class: 'err', style: 'font-size:12px' }, m.error) : null);
+    h('span', { class: 'badge', title: 'Quelle für Chat und Spiellog' }, `Log: ${m.logSource}`),
+    m.chatLogSource === 'file' ? h('span', { class: 'badge', title: 'JSON-Chat-Log: alle Kanäle, aus Tribe- und Allianz-Chat nur Befehle mit !' }, 'Chat-Log') : null, m.status !== 'online' && m.error ? h('span', { class: 'err', style: 'font-size:12px' }, m.error) : null);
 }
 function cardPlayers(m) {
   return h('div', { class: 'players' }, m.players.length ? m.players.map((p) => h('div', {}, h('a', { onclick: () => openPlayer(p.steamId), title: `online seit ${fmt(p.since)}` }, p.name))) : h('div', { class: 'muted' }, 'Keine Spieler'));

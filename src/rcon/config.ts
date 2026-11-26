@@ -20,6 +20,14 @@ export interface MapConfig {
   externalBufferReader: boolean;
   /** Where chat/game log come from: the log file (default) or RCON GetGameLog (only if nothing else reads the buffer). */
   logSource: 'file' | 'rcon' | 'none';
+  /**
+   * Second chat source: the JSON chat log (LogChatMessages=True in GameUserSettings.ini), the only one with tribe and
+   * alliance chat. Off unless set, because the server logs private conversations there; of those only "!" commands
+   * are kept.
+   */
+  chatLogSource: 'file' | 'none';
+  /** Saved/Logs/ChatLogs (or the session folder inside it); default: ChatLogs next to the game log. */
+  chatLogDir: string | null;
   /** arkmanager instance file the map came from; re-read when the RCON password stops working. */
   cfgFile: string | null;
 }
@@ -105,6 +113,7 @@ function finishMap(raw: RawMap, baseDir: string): MapConfig {
   if (raw.passwordEnv) password = process.env[raw.passwordEnv] ?? '';
   if (!raw.rconPort) throw new Error(`map ${raw.name}: rconPort missing`);
   if (!password) throw new Error(`map ${raw.name}: RCON password missing`);
+  if (raw.chatLogSource && !['file', 'none'].includes(raw.chatLogSource)) throw new Error(`map ${raw.name}: chatLogSource must be "file" or "none"`);
   const role = raw.role ?? 'live';
   return {
     name: raw.name,
@@ -118,6 +127,8 @@ function finishMap(raw: RawMap, baseDir: string): MapConfig {
     // safe default: assume someone else reads the buffer on live maps until told otherwise
     externalBufferReader: raw.externalBufferReader ?? role === 'live',
     logSource: raw.logSource ?? ((raw.logDir || raw.logCommand) ? 'file' : 'none'),
+    chatLogSource: raw.chatLogSource ?? 'none',
+    chatLogDir: raw.chatLogDir ?? (raw.logDir ? join(raw.logDir, 'ChatLogs') : null),
     cfgFile: raw.cfgFile ?? null,
   };
 }

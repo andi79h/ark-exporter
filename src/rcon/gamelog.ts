@@ -8,6 +8,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import type { ChatChannel } from './chatlog.ts';
 
 export type LogEventType = 'join' | 'leave' | 'chat' | 'server-chat' | 'admin' | 'tribe' | 'tame' | 'death' | 'mod' | 'other';
 
@@ -26,6 +27,8 @@ export interface LogEvent {
   tribeId?: string;
   /** Admin command, mod tag, tamed creature … */
   detail?: string;
+  /** Chat channel; only the JSON chat log knows it (the ServerGame log has global and local chat without telling which). */
+  channel?: ChatChannel;
   raw: string;
 }
 

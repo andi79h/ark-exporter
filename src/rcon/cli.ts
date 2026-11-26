@@ -58,7 +58,7 @@ async function main(): Promise<number> {
     switch (cmd) {
       case 'maps':
         for (const m of config.maps) {
-          process.stdout.write(`${m.name}\t${m.host}:${m.rconPort}\t${m.role}\tlog=${m.logSource}${m.logDir ? `:${m.logDir}` : ''}\texternalBufferReader=${m.externalBufferReader}\t${m.title}\n`);
+          process.stdout.write(`${m.name}\t${m.host}:${m.rconPort}\t${m.role}\tlog=${m.logSource}${m.logDir ? `:${m.logDir}` : ''}\tchatlog=${m.chatLogSource}${m.chatLogSource === 'file' && m.chatLogDir ? `:${m.chatLogDir}` : ''}\texternalBufferReader=${m.externalBufferReader}\t${m.title}\n`);
         }
         return 0;
 

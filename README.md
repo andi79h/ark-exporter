@@ -11,7 +11,7 @@ Das Werkzeug heißt `ark-export` und läuft mit **Bun** oder **Node ≥ 22.18**.
 
 ## RCON-Dienst (ark-rcon)
 
-Neben dem Exporter enthält das Repo `ark-rcon`. Er hält eine RCON-Verbindung zu jeder Karte und erfasst Spieler und Sitzungen. Chat und Spiellog liest er aus den Logdateien, wodurch Umlaute erhalten bleiben und andere RCON-Clients nichts verlieren. Dazu kommen:
+Neben dem Exporter enthält das Repo `ark-rcon`. Er hält eine RCON-Verbindung zu jeder Karte und erfasst Spieler und Sitzungen. Chat und Spiellog liest er aus den Logdateien, wodurch Umlaute erhalten bleiben und andere RCON-Clients nichts verlieren. Befehle aus Tribe- und Allianz-Chat holt er auf Wunsch aus dem JSON-Chat-Log des Servers, alles andere aus diesen Kanälen speichert er nicht. Dazu kommen:
 
 - clusterweite Banns mit Ablaufdatum
 - eine Konsole mit Sicherheitsprüfung gegen Absturzbefehle

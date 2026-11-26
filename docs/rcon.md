@@ -6,6 +6,7 @@
 
 - [Was er kann](#was-er-kann)
 - [Wie er Chat und Log liest](#wie-er-chat-und-log-liest)
+  - [Tribe- und Allianz-Chat: das Chat-Log](#tribe--und-allianz-chat-das-chat-log)
 - [Sicherheitsregeln für RCON](#sicherheitsregeln-für-rcon)
 - [Installation](#installation)
 - [Konfiguration](#konfiguration)
@@ -26,7 +27,7 @@
 | **Konsole** | Befehle an eine, mehrere oder alle Karten, jeweils durch die [Sicherheitsprüfung](#sicherheitsregeln-für-rcon). |
 | **Gespeicherte Befehle** | Vorlagen mit Parametern (Text, SteamID, Zahl), mit eigenem Recht. Ziel ist eine feste Karte, alle Karten oder die Karte, auf der der Spieler gerade ist. Damit dürfen Moderatoren geprüfte Befehle ausführen, ohne die Konsole zu haben. |
 | **Zeitpläne** | Cron mit fünf Feldern und Zeitzone, Vorwarnungen per ServerChat (z. B. 10 und 1 Minute vor einem Neustart). |
-| **Trigger** | Ereignis → Bedingung → Aktionen. Ereignisse: Join, erster Besuch im Cluster oder auf der Karte, Leave, Chat (Regex), Spiellog-Zeile (Art und Regex), Karte online/offline, gekickter gebannter Spieler. Aktionen: Befehl, ServerChat, Privatnachricht, Kick, Bann, Notiz, Discord, Pause, gespeicherter Befehl. Je Trigger eine Sperrzeit. |
+| **Trigger** | Ereignis → Bedingung → Aktionen. Ereignisse: Join, erster Besuch im Cluster oder auf der Karte, Leave, Chat (Regex, mit [Chat-Log](#tribe--und-allianz-chat-das-chat-log) auch Befehle aus Tribe- und Allianz-Chat), Spiellog-Zeile (Art und Regex), Karte online/offline, gekickter gebannter Spieler. Aktionen: Befehl, ServerChat, Privatnachricht, Kick, Bann, Notiz, Discord, Pause, gespeicherter Befehl. Je Trigger eine Sperrzeit. |
 | **Discord** | Webhooks mit Routen je Ereignisart (Chat, Join/Leave, Banns, Audit, Admin-Befehle im Spiel, Zähmungen, Kartenstatus). Erwähnungen sind abgeschaltet, Nachrichten werden gebündelt, Rate-Limits beachtet. |
 | **Audit-Log** | jede Aktion mit Urheber (Benutzer, API-Token, Kommandozeile, Zeitplan, Trigger, Admin im Spiel), Ziel, Befehl, Antwort je Karte und Ergebnis. |
 | **Benutzer** | Rollen viewer, moderator, admin, superadmin. Anmeldung mit Passwort (scrypt) oder API-Token für Skripte und Portale. |
@@ -43,6 +44,19 @@ ASE schreibt mit `-servergamelog` jede Zeile des Spiellogs auch in `ShooterGame/
 Wer `ListPlayers` abfragt, stört andere Clients nicht. Der Dienst fragt alle 10 s (`pollSeconds`). Daraus entstehen Sitzungen und Spielerprofile, denn nur `ListPlayers` liefert die SteamID.
 
 Liegen die Logdateien auf einem anderen Rechner, kann ein Befehl sie liefern (`logCommand`). Ein Beispiel dafür ist `scripts/follow-gamelog.sh` über ssh. Ohne Datei geht es mit `logSource: "rcon"` auch über `GetGameLog`, aber nur, wenn sonst niemand den Puffer liest.
+
+### Tribe- und Allianz-Chat: das Chat-Log
+
+Im `ServerGame`-Log und in `GetChat` stehen nur Global- und Lokal-Chat, in ASE wie in ASA. Tribe- und Allianz-Chat schreibt der Server nur in ein eigenes Chat-Log. Dafür muss in der `GameUserSettings.ini` unter `[ServerSettings]` `LogChatMessages=True` stehen, als reine Startoption wirkt der Schalter nicht. Der Server meldet dann im `ShooterGame.log` „Chat logging enabled“. Mit `chatLogSource: "file"` liest der Dienst dieses Log als zweite Quelle neben dem `ServerGame`-Log.
+
+- **Ort:** `ShooterGame/Saved/Logs/ChatLogs/<SessionName ohne Sonderzeichen>/ChatLog_<Datum>_<Stunde>-<Minute>_<Karte>.json`. Die Zeit ist UTC, Stunde und Minute stehen ohne führende Null, etwa jede Minute beginnt eine Datei. `chatLogDir` zeigt auf `ChatLogs` (Vorgabe: neben dem Logordner) oder direkt auf den Unterordner. Fehlt der Ordner beim Start noch, wartet der Dienst auf ihn.
+- **Format:** jede Datei ist ein JSON-Feld, vorn ein Eintrag mit `"Metadata": true` und `FileTimestamp`, am Ende `{}`. Die laufende Datei ist noch offen. Der Server schreibt sie bei jedem Flush neu, frühestens alle 15 s (`ChatLogFlushIntervalSeconds`). Der Dienst zählt je Datei, wie viele Einträge er schon verarbeitet hat. So kommt jeder Eintrag genau einmal an, auch wenn er eine Datei mitten im Schreiben liest oder selbst neu startet. Er prüft den Ordner alle 2 s.
+- **ASE und ASA:** ASE schreibt je Eintrag `Timestamp` (dieselbe Millisekunde wie im `ServerGame`-Log) und in `SenderSteamId` die SteamID64. ASA hat keinen Zeitstempel je Eintrag, und in `SenderSteamId` steht die 32-stellige EOS-ID. Bei ASA gilt die Zeit, zu der die Datei geschrieben wurde, das Ereignis trägt dann `tsEstimated`.
+- **Absender:** kommt direkt aus `SenderSteamId`, ein Namensabgleich ist nicht nötig. `SenderId` ist die ARK-Spieler-ID, der Dienst trägt sie ins Spielerprofil ein (für Befehle wie `GiveItemToPlayer`). Den Namen aus RCON mit `?` statt Umlaut repariert er wie bei Joins.
+- **Doppelte:** Global- und Lokal-Chat stehen in beiden Logs. Die erste Kopie zählt, die zweite fällt weg. Erkannt werden Kopien am Zeilentext `Name (Charakter): Text`, bei ASE zusätzlich an der Zeit (±2 s), bei ASA an der Ankunft innerhalb von 2 Minuten. Schickt jemand denselben Befehl zweimal, bleiben beide erhalten.
+- **Datenschutz:** Mit dem Schalter schreibt der Server auch private Tribe- und Allianz-Gespräche mit. Aus diesen beiden Kanälen und aus unbekannten Kanälen gibt der Dienst nur Zeilen weiter, die mit `!` beginnen. Alle anderen zählt er nur. Text, Absender und IDs dieser Zeilen speichert er nicht. Die Befehle landen als `chat` mit `data.channel` (`tribe`, `alliance`) in `mgr_events`, an Hooks und an Trigger, aber nicht in Discord. Die Dateien selbst löscht der Server nach `ChatLogMaxAgeInDays` (z. B. `1`). Serverregeln und Datenschutzhinweis sollten den Mitschnitt nennen.
+- **Verzug:** Befehle aus dem Chat-Log kommen erst mit dem nächsten Flush an, also bis zu 15 s später als Zeilen aus dem `ServerGame`-Log.
+- **Andere Rechner:** Das Chat-Log liest der Dienst nur aus einem Ordner. Einen Befehl wie `logCommand` gibt es dafür noch nicht.
 
 ## Sicherheitsregeln für RCON
 
@@ -108,7 +122,7 @@ Läuft der Dienst auf demselben Rechner wie die Server, sollten die RCON-Ports n
     "instances": "/etc/arkmanager/instances",
     "exclude": ["update-master", "test-*"],
     "defaults": { "role": "live", "externalBufferReader": true, "logSource": "file" },
-    "overrides": { "event-map": { "role": "test" } }
+    "overrides": { "event-map": { "role": "test" }, "main-map": { "chatLogSource": "file" } }
   },
   "maps": [
     { "name": "remote1", "host": "10.0.0.5", "rconPort": 32330, "passwordEnv": "REMOTE1_RCON", "logSource": "none" }
@@ -136,6 +150,8 @@ Läuft der Dienst auf demselben Rechner wie die Server, sollten die RCON-Ports n
 - `role`: `live` oder `test`. Auf Test-Karten darf ein superadmin ungetestete Befehle ohne `force` senden.
 - `externalBufferReader`: `true`, solange ein anderes Programm `GetChat`/`GetGameLog` liest. Bei Live-Karten ist das die Vorgabe.
 - `logSource`: `file` (Standard, wenn ein Logordner bekannt ist), `rcon` oder `none`.
+- `chatLogSource`: `file` liest zusätzlich das JSON-Chat-Log mit Tribe- und Allianz-Chat ([siehe oben](#tribe--und-allianz-chat-das-chat-log)). Vorgabe ist `none`, weil der Server dort auch private Gespräche mitschreibt.
+- `chatLogDir`: Ordner `Saved/Logs/ChatLogs` oder der Unterordner der Sitzung darin. Vorgabe ist `ChatLogs` im Logordner (`logDir`).
 
 **Sonstiges**
 - `hooks`: Module, die beim Start geladen werden (`export default function (service) {}`). Sie hören auf Ereignisse (`poll`, `event`, `player`, `status`, `audit`) und können über `service.store.db` in eigene Tabellen schreiben.
@@ -218,6 +234,7 @@ Zeitstempel sind Millisekunden UTC.
 
 ```bash
 node --test test/rcon.test.ts                    # RCON-Attrappe mit dem Verhalten von ASE 358.24, SQLite
+node --test test/chatlog.test.ts                 # Chat-Log von ASE und ASA: Leser, Ordner, Doppelte, Weg durch den Dienst
 ARK_EXPORT_TEST_MYSQL=mysql://root:pw@127.0.0.1:3306/mysql node --test test/rcon.test.ts   # zusätzlich MySQL
 node test/demo.ts 8790                           # Vorführung: drei Attrappen-Karten mit Spielern und Chat, Anmeldung demo / demo-password
 ```
